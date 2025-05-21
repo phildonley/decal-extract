@@ -81,7 +81,7 @@ def download_pdf_for_part(part, tmp_dir, driver, base_url):
     Search for the exact part, open its Documents modal,
     then either fetch via requests (if onclick URL exists),
     or click-and-poll tmp_dir for the PDF.
-    Returns the local pdf_path (string).
+    Returns the local pdf_path (string), or None if no doc exists.
     """
     wait = WebDriverWait(driver, 20)
 
@@ -90,29 +90,38 @@ def download_pdf_for_part(part, tmp_dir, driver, base_url):
     wait.until(EC.presence_of_element_located((By.ID, 'docLibContainer_search_field')))
 
     clean = strip_suffix(part)
-
     fld = wait.until(EC.element_to_be_clickable((By.ID, 'docLibContainer_search_field')))
     fld.clear()
     fld.send_keys(clean)
     driver.find_element(By.ID, 'docLibContainer_search_button').click()
 
-    # 2) Find the <td> whose text == our part, then get its <tr>
-    td = wait.until(EC.presence_of_element_located((
-        By.XPATH,
-        f"//td[normalize-space(text())='{clean}']"
-    )))
-    tr = td.find_element(By.XPATH, "./ancestor::tr")
+    # 2) WAIT for either a result row _or_ the “no data” message
+    try:
+        wait.until(EC.any_of(
+            EC.presence_of_element_located((By.XPATH, "//td[normalize-space(text())='" + clean + "']")),
+            EC.presence_of_element_located((By.CSS_SELECTOR, "div.a-IRR-noDataMsg"))
+        ))
+    except:
+        # neither appeared in time
+        raise RuntimeError(f"Search stalled for part {clean}")
 
-    # 3) Click that row’s Documents button
+    # 3) if “no data” banner is present, bail out
+    if driver.find_elements(By.CSS_SELECTOR, "div.a-IRR-noDataMsg"):
+        print(f"    · No document found for {clean}; skipping.")
+        return None
+
+    # 4) we have a row — click its Documents button
+    td = driver.find_element(By.XPATH, "//td[normalize-space(text())='" + clean + "']")
+    tr = td.find_element(By.XPATH, "./ancestor::tr")
     docs_btn = tr.find_element(By.XPATH, ".//button[contains(., 'Documents')]")
     docs_btn.click()
 
-    # 4) Into the Documents iframe
+    # 5) Into the Documents iframe
     wait.until(EC.frame_to_be_available_and_switch_to_it(
         (By.CSS_SELECTOR, "iframe[title='Documents']")
     ))
 
-    # 5) Try to parse an inline URL & filename
+    # 6) Try to parse an inline URL & filename
     dl = wait.until(EC.presence_of_element_located((By.ID, "downloadBtn")))
     onclick = dl.get_attribute("onclick") or ""
     m = re.search(r"doDownload\('([^']+)','([^']+)'\)", onclick)
@@ -130,13 +139,12 @@ def download_pdf_for_part(part, tmp_dir, driver, base_url):
             f.write(resp.content)
 
         driver.switch_to.default_content()
-        return out_path, driver
+        return out_path
 
-    # 6) Fallback: click + poll for the file to appear
+    # 7) Fallback: click + poll for the file to appear
     dl.click()
     driver.switch_to.default_content()
     return wait_for_pdf(tmp_dir, clean, timeout=DOWNLOAD_TIMEOUT)
-
 
 def render_pdf_color_page(pdf_path, dpi=300):
     """Load the first page of PDF at `dpi` into a BGR numpy image."""
