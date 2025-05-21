@@ -30,6 +30,7 @@ DPI             = 300
 THICKNESS_IN    = 0.004
 MATERIAL_DENSITY= 0.035
 FACTOR          = 166
+STEP_DELAY      = 0.5 #whenever you need a short delay insert: time.sleep(STEP_DELAY)
 
 # Map keyword labels to BGR fill colors
 COLOR_MAP = {
@@ -452,11 +453,13 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
             # 1) Download PDF (auto-retries on WebDriver errors)
             pdf_path, driver = safe_download(part, tmp_dir, driver, base_url, profile)
             print(f"   · PDF downloaded → {pdf_path}")
+            time.sleep(STEP_DELAY)
 
             # 2) Render to BGR image
             print("    · Rendering to image…")
             img_color = render_pdf_color_page(pdf_path, dpi=DPI)
             h_img, w_img = img_color.shape[:2]
+            time.sleep(STEP_DELAY)
 
              # 3) Select the best crop box across all template‐sets
             try:
@@ -506,6 +509,7 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
             out_jpg  = os.path.join(imgs_dir, jpg_name)
             print(f"    · Writing JPEG → {out_jpg}")
             cv2.imwrite(out_jpg, crop)
+            time.sleep(STEP_DELAY)
 
             # 6) Parse dim/compute
             print("    · Parsing dimensions & computing…")
@@ -513,10 +517,12 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
             vol  = h_in * w_in * THICKNESS_IN
             wgt  = vol * MATERIAL_DENSITY
             dimw = vol / FACTOR
+            time.sleep(STEP_DELAY)
 
             # 7) Clean up PDF
             print("    · Removing temp PDF")
             os.remove(pdf_path)
+            time.sleep(STEP_DELAY)
 
             # 8) Record row
             records.append({
@@ -542,6 +548,7 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
                 'UPDATED':        'Y'
             })
             print(f"[{i}] ✅ Done\n")
+            time.sleep(STEP_DELAY)
 
         except Exception as e:
             print(f"[{i}] ❌ ERROR: {e}")
