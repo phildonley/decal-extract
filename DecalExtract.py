@@ -381,6 +381,31 @@ def select_best_crop_box(img_color, template_sets, edge=5):
     print(f"    · Chosen crop box {best_box} with penalty {best_penalty}")
     return best_box
 
+def wait_for_login(driver, timeout=300):
+    """
+    Block until the IRR search field reappears,
+    i.e. you’ve logged back in.
+    """
+    WebDriverWait(driver, timeout).until(
+        EC.presence_of_element_located((By.ID, 'docLibContainer_search_field'))
+    )
+
+def safe_download(part, tmp_dir, driver, base_url, profile):
+    """
+    Wrap download_pdf_for_part in a try/except.
+    If Selenium hiccups, restart the browser once and retry.
+    Returns the local pdf_path.
+    """
+    try:
+        return download_pdf_for_part(part, tmp_dir, driver, base_url)
+    except WebDriverException:
+        driver.quit()
+        sleep(2)
+        # start a fresh browser session
+        new_driver = init_driver(tmp_dir, profile_dir=profile, headless=False)
+        new_driver.get(base_url)
+        wait_for_login(new_driver)
+        return download_pdf_for_part(part, tmp_dir, new_driver, base_url)
 
 def main(input_sheet, output_root, base_url, profile=None, seq=105):
     # ─── Prepare output directories ────────────────────────────────────────────
@@ -425,8 +450,8 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
         print(f"[{i}] ➡️ Processing part={part}, TMS={tms}")
 
         try:
-            # 1) Download PDF
-            pdf_path = download_pdf_for_part(part, tmp_dir, driver, base_url)
+            # 1) Download PDF (auto-retries on WebDriver errors)
+            pdf_path = safe_download(part, tmp_dir, driver, base_url, profile)
             print(f"    · PDF downloaded → {pdf_path}")
 
             # 2) Render to BGR image
