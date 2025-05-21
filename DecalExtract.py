@@ -21,6 +21,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support import WebDriverException
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 SITE_ID         = 733
@@ -128,7 +129,7 @@ def download_pdf_for_part(part, tmp_dir, driver, base_url):
             f.write(resp.content)
 
         driver.switch_to.default_content()
-        return out_path
+        return out_path, driver
 
     # 6) Fallback: click + poll for the file to appear
     dl.click()
@@ -391,21 +392,19 @@ def wait_for_login(driver, timeout=300):
     )
 
 def safe_download(part, tmp_dir, driver, base_url, profile):
-    """
-    Wrap download_pdf_for_part in a try/except.
-    If Selenium hiccups, restart the browser once and retry.
-    Returns the local pdf_path.
-    """
     try:
-        return download_pdf_for_part(part, tmp_dir, driver, base_url)
+        # original code path → now returns (pdf_path, driver)
+        path = download_pdf_for_part(part, tmp_dir, driver, base_url)
+        return path, driver
+
     except WebDriverException:
         driver.quit()
-        sleep(2)
-        # start a fresh browser session
-        new_driver = init_driver(tmp_dir, profile_dir=profile, headless=False)
-        new_driver.get(base_url)
-        wait_for_login(new_driver)
-        return download_pdf_for_part(part, tmp_dir, new_driver, base_url)
+        time.sleep(2)
+        driver = init_driver(tmp_dir, profile_dir=profile, headless=False)
+        driver.get(base_url)
+        wait_for_login(driver)
+        path = download_pdf_for_part(part, tmp_dir, driver, base_url)
+        return path, driver
 
 def main(input_sheet, output_root, base_url, profile=None, seq=105):
     # ─── Prepare output directories ────────────────────────────────────────────
@@ -451,8 +450,8 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
 
         try:
             # 1) Download PDF (auto-retries on WebDriver errors)
-            pdf_path = safe_download(part, tmp_dir, driver, base_url, profile)
-            print(f"    · PDF downloaded → {pdf_path}")
+            pdf_path, driver = safe_download(part, tmp_dir, driver, base_url, profile)
+            print(f"   · PDF downloaded → {pdf_path}")
 
             # 2) Render to BGR image
             print("    · Rendering to image…")
