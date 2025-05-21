@@ -393,19 +393,31 @@ def wait_for_login(driver, timeout=300):
     )
 
 def safe_download(part, tmp_dir, driver, base_url, profile):
+    """
+    Wrap download_pdf_for_part in a try/except.
+    If Selenium hiccups, restart the browser once and retry.
+    Returns a tuple (pdf_path, driver), where driver may be a new session.
+    """
     try:
-        # original code path → now returns (pdf_path, driver)
-        path = download_pdf_for_part(part, tmp_dir, driver, base_url)
-        return path, driver
-
-    except WebDriverException:
-        driver.quit()
+        pdf_path = download_pdf_for_part(part, tmp_dir, driver, base_url)
+        return pdf_path, driver
+    except WebDriverException as e:
+        print(f"    · WebDriver hiccup ({e}); restarting browser…")
+        # tear down the old session
+        try:
+            driver.quit()
+        except:
+            pass
         time.sleep(2)
-        driver = init_driver(tmp_dir, profile_dir=profile, headless=False)
-        driver.get(base_url)
-        wait_for_login(driver)
-        path = download_pdf_for_part(part, tmp_dir, driver, base_url)
-        return path, driver
+
+        # start a fresh browser session
+        new_driver = init_driver(tmp_dir, profile_dir=profile, headless=False)
+        new_driver.get(base_url)
+        wait_for_login(new_driver)
+
+        # retry the download
+        pdf_path = download_pdf_for_part(part, tmp_dir, new_driver, base_url)
+        return pdf_path, new_driver
 
 def main(input_sheet, output_root, base_url, profile=None, seq=105):
     # ─── Prepare output directories ────────────────────────────────────────────
