@@ -31,7 +31,6 @@ THICKNESS_IN    = 0.004
 MATERIAL_DENSITY= 0.035
 FACTOR          = 166
 STEP_DELAY      = 0.5 #whenever you need a short delay insert: time.sleep(STEP_DELAY)
-y_px = int(dim_pt * dpi/72)
 
 # Map keyword labels to BGR fill colors
 COLOR_MAP = {
