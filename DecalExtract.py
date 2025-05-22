@@ -139,9 +139,15 @@ def init_driver(download_dir, profile_dir=None, headless=False):
     return webdriver.Chrome(options=opts)
 
 def download_pdf_for_part(part, tmp_dir, driver, base_url):
+    """
+    Search for part in the library.
+    - If “No data found” appears, return None.
+    - If the sign-in lightbox appears, raise to trigger safe_download retry.
+    - Otherwise download the PDF (inline URL or click+poll).
+    """
     wait = WebDriverWait(driver, 20)
 
-    # 1) Go back & search
+    # 1) Search for the part
     driver.get(base_url)
     wait.until(EC.presence_of_element_located((By.ID, 'docLibContainer_search_field')))
     clean = strip_suffix(part)
@@ -150,11 +156,16 @@ def download_pdf_for_part(part, tmp_dir, driver, base_url):
     fld.send_keys(clean)
     driver.find_element(By.ID, 'docLibContainer_search_button').click()
 
-    # ── 1a) bail if no data found
+    # 1a) bail if “No data found”
+    time.sleep(1)
     if driver.find_elements(By.CSS_SELECTOR, 'div.a-IRR-noDataMsg'):
         return None
 
-    # 2) click Documents → iframe → download ...
+    # 1b) detect locked-out sign-in lightbox
+    if driver.find_elements(By.CSS_SELECTOR, 'div.sign-in-box.ext-sign-in-box'):
+        raise WebDriverException("Session locked, need to re-login")
+
+    # 2) Click the row’s Documents button
     td = wait.until(EC.presence_of_element_located((
         By.XPATH,
         f"//td[normalize-space(text())='{clean}']"
@@ -162,53 +173,29 @@ def download_pdf_for_part(part, tmp_dir, driver, base_url):
     tr = td.find_element(By.XPATH, "./ancestor::tr")
     docs_btn = tr.find_element(By.XPATH, ".//button[contains(., 'Documents')]")
     docs_btn.click()
-    
-    # continue with locating the download button…
-    dl = wait.until(EC.presence_of_element_located((By.ID, "downloadBtn")))
-    
-    # 2) Find the <td> whose text == our part, then get its <tr>
-    td = wait.until(EC.presence_of_element_located((
-        By.XPATH,
-        f"//td[normalize-space(text())='{clean}']"
-    )))
 
-    # 3) if “no data” banner is present, bail out
-    if driver.find_elements(By.CSS_SELECTOR, "div.a-IRR-noDataMsg"):
-        print(f"    · No document found for {clean}; skipping.")
-        return None
-
-    # 4) we have a row — click its Documents button
-    td = driver.find_element(By.XPATH, "//td[normalize-space(text())='" + clean + "']")
-    tr = td.find_element(By.XPATH, "./ancestor::tr")
-    docs_btn = tr.find_element(By.XPATH, ".//button[contains(., 'Documents')]")
-    docs_btn.click()
-
-    # 5) Into the Documents iframe
+    # 3) Switch into the Documents iframe
     wait.until(EC.frame_to_be_available_and_switch_to_it(
         (By.CSS_SELECTOR, "iframe[title='Documents']")
     ))
 
-    # 6) Try to parse an inline URL & filename
+    # 4) Try inline URL download
     dl = wait.until(EC.presence_of_element_located((By.ID, "downloadBtn")))
     onclick = dl.get_attribute("onclick") or ""
     m = re.search(r"doDownload\('([^']+)','([^']+)'\)", onclick)
-
     if m:
-        # fetch via requests (so we can inject cookies)
         url_frag, filename = m.groups()
         full_url = urljoin(base_url, url_frag)
         cookies = {c["name"]: c["value"] for c in driver.get_cookies()}
         resp = requests.get(full_url, cookies=cookies, timeout=60)
         resp.raise_for_status()
-
         out_path = os.path.join(tmp_dir, filename)
         with open(out_path, "wb") as f:
             f.write(resp.content)
-
         driver.switch_to.default_content()
         return out_path
 
-    # 7) Fallback: click + poll for the file to appear
+    # 5) Fallback: click + poll for the PDF file
     dl.click()
     driver.switch_to.default_content()
     return wait_for_pdf(tmp_dir, clean, timeout=DOWNLOAD_TIMEOUT)
