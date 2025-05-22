@@ -653,65 +653,62 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
 
             print(f"    · PDF downloaded → {pdf_path}")
 
-            # 2) Render to BGR image
+            # 2) Render PDF → BGR image
             print("    · Rendering to image…")
             img = render_pdf_color_page(pdf_path, dpi=DPI)
             h_img, w_img = img.shape[:2]
             time.sleep(STEP_DELAY)
             
-            # 3) Try full-logo crop via the “…mm” line
+            # 3) Full‐logo via “…mm” line?
             y_crop = crop_full_logo(pdf_path, dpi=DPI)
             if y_crop and y_crop > 0:
                 print(f"    · Full-logo crop at y={y_crop}px")
-                crop_region = img[:y_crop, :]
-            else:
-                # 4) Template-based bracket crop
-                try:
-                    print("    · Selecting best crop box…")
-                    x0, y0, x1, y1 = select_best_crop_box(img, template_sets)
-                    print(f"    · Bracket crop box: {(x0, y0, x1, y1)}")
-                    crop_region = img[y0:y1, x0:x1]
-                except Exception as e:
-                    print(f"    · Template crop failed ({e}); falling back to blob/full-page…")
-                    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                    _, thresh = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
-                    cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                    if cnts:
-                        bx, by, bw, bh = cv2.boundingRect(max(cnts, key=cv2.contourArea))
-                        print(f"    · Blob crop box: {(bx, by, bx+bw, by+bh)}")
-                        crop_region = img[by:by+bh, bx:bx+bw]
-                    else:
-                        m = int(0.01 * min(h_img, w_img))
-                        print(f"    · Full-page margin crop: {(m, m, w_img-m, h_img-m)}")
-                        crop_region = img[m:h_img-m, m:w_img-m]
+                region = img[:y_crop, :]
             
-            # 5) Handle legacy multi-layer bands
-            rh, rw = crop_region.shape[:2]
-            if rw > rh * 1.8:
-                print("    · Detected legacy multi-layer → slicing bands…")
-                third = rw // 3
-                green = crop_region[:, third:2*third]
-                black = crop_region[:, 2*third:3*third]
-                def recolor(band, bgr):
-                    g = cv2.cvtColor(band, cv2.COLOR_BGR2GRAY)
-                    _, mask = cv2.threshold(g, 250, 255, cv2.THRESH_BINARY_INV)
-                    fill = np.zeros_like(band); fill[:] = bgr
-                    return np.where(mask[:,:,None]>0, fill, band)
-                band_g = recolor(green, COLOR_MAP['green'])
-                band_b = recolor(black, COLOR_MAP['black'])
-                stacked = band_b.copy()
-                mask_g = cv2.cvtColor(band_g, cv2.COLOR_BGR2GRAY) < 250
-                for c in range(3):
-                    stacked[:,:,c] = np.where(mask_g, band_g[:,:,c], stacked[:,:,c])
-                crop = stacked
             else:
-                crop = crop_region
+                # 4) Look for multiple matching bracket crops
+                boxes = select_all_crop_candidates(img, template_sets)
+                if len(boxes) >= 2:
+                    print(f"    · Legacy multi-layer detected via {len(boxes)} aligned boxes")
+                    # sort left→right and slice out each band
+                    bands = [img[y0:y1, x0:x1] for x0,y0,x1,y1 in sorted(boxes, key=lambda b: b[0])]
+                    # recolor each then stack: assume first is green, second black
+                    layer_g = recolor_layer(bands[0], COLOR_MAP['green'])
+                    layer_b = recolor_layer(bands[1], COLOR_MAP['black'])
+                    # composite green on black
+                    alpha_g = layer_g[:,:,3] / 255.0
+                    comp = layer_b.copy().astype(float)
+                    for c in range(3):
+                        comp[:,:,c] = alpha_g * layer_g[:,:,c] + (1-alpha_g) * comp[:,:,c]
+                    region = comp.astype(np.uint8)[...,:3]
+            
+                else:
+                    # 5) Single‐crop via templates → blob → margin
+                    try:
+                        print("    · Selecting best crop box…")
+                        x0,y0,x1,y1 = select_best_crop_box(img, template_sets)
+                        print(f"    · Bracket crop box: {(x0,y0,x1,y1)}")
+                        region = img[y0:y1, x0:x1]
+            
+                    except Exception as e:
+                        print(f"    · Template crop failed ({e}); falling back to blob/full-page…")
+                        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                        _, thresh = cv2.threshold(gray, 250,255,cv2.THRESH_BINARY_INV)
+                        cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                        if cnts:
+                            bx,by,bw,bh = cv2.boundingRect(max(cnts, key=cv2.contourArea))
+                            print(f"    · Blob crop box: {(bx,by,bx+bw,by+bh)}")
+                            region = img[by:by+bh, bx:bx+bw]
+                        else:
+                            m = int(0.01*min(h_img,w_img))
+                            print(f"    · Full-page margin crop: {(m,m,w_img-m,h_img-m)}")
+                            region = img[m:h_img-m, m:w_img-m]
             
             # 6) Save JPEG
-            jpg_name = f"{tms}.{part}.{seq}.jpg"
-            out_jpg  = os.path.join(imgs_dir, jpg_name)
+            jpg = f"{tms}.{part}.{seq}.jpg"
+            out_jpg = os.path.join(imgs_dir, jpg)
             print(f"    · Writing JPEG → {out_jpg}")
-            cv2.imwrite(out_jpg, crop)
+            cv2.imwrite(out_jpg, region)
             time.sleep(STEP_DELAY)
 
             # 7) Parse dim/compute
