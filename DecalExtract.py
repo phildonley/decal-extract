@@ -31,6 +31,7 @@ THICKNESS_IN    = 0.004
 MATERIAL_DENSITY= 0.035
 FACTOR          = 166
 STEP_DELAY      = 0.5 #whenever you need a short delay insert: time.sleep(STEP_DELAY)
+y_px = int(dim_pt * dpi/72)
 
 # Map keyword labels to BGR fill colors
 COLOR_MAP = {
@@ -419,7 +420,21 @@ def extract_color_label(pdf_path: str,
                     best = txt
 
     return best or "black"
-    
+                            
+def crop_full_logo(pdf_path, dpi=300, margin_pt=5):
+    """
+    Find the “…mm” dimension line in the PDF and return
+    its top‐Y in pixels (minus a small margin). If nothing
+    is found, returns None.
+    """
+    with pdfplumber.open(pdf_path) as pdf:
+        words = pdf.pages[0].extract_words()
+    dims = [w for w in words if w["text"].lower().endswith("mm")]
+    if not dims:
+        return None
+    dim_top_pt = min(w["top"] for w in dims)
+    return int((dim_top_pt - margin_pt) * dpi / 72)
+
 def wait_for_pdf(tmp_dir, part, timeout=DOWNLOAD_TIMEOUT):
     """
     Poll tmp_dir until a PDF whose filename contains `part` appears
@@ -640,35 +655,16 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
             print(f"    · PDF downloaded → {pdf_path}")
 
             # 2) Render to BGR image
-            print("    · Rendering to image…")
             img_color = render_pdf_color_page(pdf_path, dpi=DPI)
-            h_img, w_img = img_color.shape[:2]
-            time.sleep(STEP_DELAY)
-
-            # ── 3) Crop selection: special large-logo first, else template-based
-            # try the blob-group detector for full-width logos
-            logo_box = find_aligned_blob_group(img_color)
-            if logo_box:
-                print("    · Detected large aligned-blob group → direct crop")
-                x0,y0,x1,y1 = logo_box
+            
+            # 2a) try full‐logo crop by dimension‐line
+            y_crop = crop_full_logo(pdf_path, dpi=DPI)
+            if y_crop and y_crop > 0:
+                region = img_color[:y_crop, :]
             else:
-                try:
-                    print("    · Selecting best crop box…")
-                    x0, y0, x1, y1 = select_best_crop_box(img_color, template_sets)
-                except Exception as e:
-                    print(f"    · Crop-by-templates failed ({e}); falling back to blob/full-page…")
-                    gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
-                    _, thresh = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
-                    cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                    if cnts:
-                        c = max(cnts, key=cv2.contourArea)
-                        bx, by, bw, bh = cv2.boundingRect(c)
-                        x0, y0, x1, y1 = bx, by, bx+bw, by+bh
-                        print(f"    · Blob crop box: {(x0, y0, x1, y1)}")
-                    else:
-                        margin = int(0.01 * min(h_img, w_img))
-                        x0, y0, x1, y1 = margin, margin, w_img-margin, h_img-margin
-                        print(f"    · Full-page margin box: {(x0, y0, x1, y1)}")
+                # 3) fallback to your existing select_best_crop_box
+                x0, y0, x1, y1 = select_best_crop_box(img_color, template_sets)
+                region = img_color[y0:y1, x0:x1]
 
             # ── 4) Extract region & handle legacy bands ───────────────────────────────
             # first get *all* possible bracket rectangles
