@@ -662,26 +662,26 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
             time.sleep(STEP_DELAY)
             
             # 3) Try bracket‐templates, else blob/full‐page
-            try:
+             try:
                 print("    · Selecting best crop box…")
-                x0, y0, x1, y1 = select_best_crop_box(img_color, template_sets)
+                x0, y0, x1, y1 = select_best_crop_box(img, template_sets)
                 print(f"    · Bracket crop box: {(x0, y0, x1, y1)}")
-                crop_region = img_color[y0:y1, x0:x1]
+                crop_region = img[y0:y1, x0:x1]
             except Exception as e:
                 print(f"    · Template crop failed ({e}); falling back to blob/full-page…")
-                gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
+                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
                 _, thresh = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
                 cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 if cnts:
                     bx, by, bw, bh = cv2.boundingRect(max(cnts, key=cv2.contourArea))
                     print(f"    · Blob crop box: {(bx, by, bx+bw, by+bh)}")
-                    crop_region = img_color[by:by+bh, bx:bx+bw]
+                    crop_region = img[by:by+bh, bx:bx+bw]
                 else:
                     m = int(0.01 * min(h_img, w_img))
                     print(f"    · Full-page margin crop: {(m, m, w_img-m, h_img-m)}")
-                    crop_region = img_color[m:h_img-m, m:w_img-m]
-            
-            # Legacy multi-layer detection
+                    crop_region = img[m:h_img-m, m:w_img-m]
+
+            # 4) Legacy multi-layer detection (bands side-by-side)
             rh, rw = crop_region.shape[:2]
             if rw > rh * 1.8:
                 print("    · Detected legacy multi-layer → slicing bands…")
@@ -702,8 +702,8 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
                 crop = stacked
             else:
                 crop = crop_region
-            
-            # Unified save step
+
+            # 5) Save JPEG
             jpg_name = f"{tms}.{part}.{seq}.jpg"
             out_jpg  = os.path.join(imgs_dir, jpg_name)
             print(f"    · Writing JPEG → {out_jpg}")
