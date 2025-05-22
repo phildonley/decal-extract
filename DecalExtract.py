@@ -880,23 +880,6 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
     })
     print(f"[{i}] ✅ Done\n")
 
-    # ── 6) Tear down & write CSV ────────────────────────────────────────────────
-    driver.quit()
-    shutil.rmtree(tmp_dir)
-
-    df_out = pd.DataFrame(records)
-    cols = [
-        'ITEM_ID','ITEM_TYPE','DESCRIPTION','NET_LENGTH','NET_WIDTH','NET_HEIGHT',
-        'NET_WEIGHT','NET_VOLUME','NET_DIM_WGT','DIM_UNIT','WGT_UNIT','VOL_UNIT',
-        'FACTOR','SITE_ID','TIME_STAMP','OPT_INFO_1','OPT_INFO_2','OPT_INFO_3',
-        'OPT_INFO_4','OPT_INFO_5','OPT_INFO_6','OPT_INFO_7','OPT_INFO_8',
-        'IMAGE_FILE_NAME','UPDATED'
-    ]
-    df_out = df_out.reindex(columns=cols)
-    out_csv = os.path.join(cub_dir, f"{SITE_ID}_{ts}.csv")
-    df_out.to_csv(out_csv, index=False)
-    print("All done →", out_csv)
-
 if __name__ == '__main__':
     # 0) pick profile first
     print("→ About to ask for Chrome profile…")
