@@ -44,61 +44,52 @@ COLOR_MAP = {
 # ── Utility Functions ─────────────────────────────────────────────────────────
 def choose_chrome_profile():
     """
-    Pop up a window with three buttons:
-      • Default → use your default Chrome profile (close Chrome first)
-      • New     → launch a fresh session (no profile)
-      • Custom  → browse to a profile folder
+    Let the user pick:
+      • Default → use %LOCALAPPDATA%/Google/Chrome/User Data/Default
+      • Custom  → type or browse for a profile path (blank => new session)
     Returns the profile_dir string or None.
     """
     win = tk.Tk()
     win.title("Select Chrome Profile")
-    win.geometry("400x150")
+    win.geometry("350x120")
     win.resizable(False, False)
 
-    # Instruction label
     tk.Label(
         win,
-        text=(
-            "Select Chrome Profile\n\n"
-            "Default: use your default profile (close all Chrome windows first)\n"
-            "New:     start a fresh session (no profile)\n"
-            "Custom: choose a profile folder manually"
-        ),
+        text="Choose Chrome profile:\n\n"
+             "Default: closed-Chrome, use your default profile folder\n"
+             "Custom: enter or browse to a different profile (blank→new)",
         justify="left",
-        padx=10,
-        pady=10,
-        wraplength=380
+        wraplength=340,
+        padx=10, pady=10
     ).pack()
 
     choice = {"profile": None}
 
     def on_default():
-        choice["profile"] = os.path.join(
-            os.environ.get("LOCALAPPDATA", ""),
-            "Google", "Chrome", "User Data", "Default"
+        choice["profile"] = os.path.expandvars(
+            r"%LOCALAPPDATA%\Google\Chrome\User Data\Default"
         )
-        win.destroy()
-
-    def on_new():
-        choice["profile"] = None
         win.destroy()
 
     def on_custom():
-        path = filedialog.askdirectory(
-            title="Select Chrome profile directory"
+        # ask string first
+        p = simpledialog.askstring(
+            "Custom Profile",
+            "Enter full path to Chrome profile folder\n(leave blank for a new session):",
+            parent=win
         )
-        # if user cancels, path == ''
-        choice["profile"] = path or None
+        if p:
+            choice["profile"] = p
+        else:
+            choice["profile"] = None
         win.destroy()
 
-    # Buttons frame
-    btn_frame = tk.Frame(win, pady=10)
-    btn_frame.pack()
-    tk.Button(btn_frame, text="Default", width=10, command=on_default).pack(side="left", padx=5)
-    tk.Button(btn_frame, text="New",     width=10, command=on_new).pack(    side="left", padx=5)
-    tk.Button(btn_frame, text="Custom",  width=10, command=on_custom).pack( side="left", padx=5)
+    btns = tk.Frame(win, pady=5)
+    btns.pack()
+    tk.Button(btns, text="Default", width=12, command=on_default).pack(side="left", padx=8)
+    tk.Button(btns, text="Custom",  width=12, command=on_custom).pack(side="left", padx=8)
 
-    # Start the dialog
     win.mainloop()
     return choice["profile"]
         
