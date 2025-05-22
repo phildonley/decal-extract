@@ -535,12 +535,10 @@ def safe_download(part, tmp_dir, driver, base_url, profile):
             time.sleep(delay)
             driver = init_driver(tmp_dir, profile_dir=profile, headless=False)
             driver.get(base_url)
-            # wait only 10s for the library field before next try
             WebDriverWait(driver, 10).until(
                 EC.presence_of_element_located((By.ID, 'docLibContainer_search_field'))
             )
-    # final “no‐delay” attempt
-    print("    · Final retry…")
+    # final attempt without delay
     return download_pdf_for_part(part, tmp_dir, driver, base_url), driver
     
 def find_aligned_blob_group(img_color, min_area=10000, tol=10, pad=20):
@@ -669,7 +667,6 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
                 x0, y0, x1, y1 = select_best_crop_box(img_color, template_sets)
                 print(f"    · Bracket crop box: {(x0, y0, x1, y1)}")
                 crop_region = img_color[y0:y1, x0:x1]
-            
             except Exception as e:
                 print(f"    · Template crop failed ({e}); falling back to blob/full-page…")
                 gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
@@ -681,13 +678,13 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
                     crop_region = img_color[by:by+bh, bx:bx+bw]
                 else:
                     m = int(0.01 * min(h_img, w_img))
-                    print(f"    · Full‐page margin box: {(m, m, w_img-m, h_img-m)}")
+                    print(f"    · Full-page margin crop: {(m, m, w_img-m, h_img-m)}")
                     crop_region = img_color[m:h_img-m, m:w_img-m]
             
-            # 4) Legacy multi‐layer?
+            # Legacy multi-layer detection
             rh, rw = crop_region.shape[:2]
             if rw > rh * 1.8:
-                print("    · Detected legacy multi‐layer → slicing bands…")
+                print("    · Detected legacy multi-layer → slicing bands…")
                 third = rw // 3
                 green = crop_region[:, third:2*third]
                 black = crop_region[:, 2*third:3*third]
@@ -706,7 +703,7 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
             else:
                 crop = crop_region
             
-            # 5) **Now** save exactly once (so jpg_name is always defined):
+            # Unified save step
             jpg_name = f"{tms}.{part}.{seq}.jpg"
             out_jpg  = os.path.join(imgs_dir, jpg_name)
             print(f"    · Writing JPEG → {out_jpg}")
