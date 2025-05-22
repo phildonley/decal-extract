@@ -823,6 +823,7 @@ if __name__ == '__main__':
         exit()
 
     profile = choose_chrome_profile()
+    print("▶️  chrome profile =", repr(profile))
 
     main(
         input_sheet=sheet,
