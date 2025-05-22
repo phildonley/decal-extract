@@ -44,54 +44,62 @@ COLOR_MAP = {
 # ── Utility Functions ─────────────────────────────────────────────────────────
 def choose_chrome_profile():
     """
-    Let the user pick:
-      • Default → use %LOCALAPPDATA%/Google/Chrome/User Data/Default
-      • Custom  → type or browse for a profile path (blank => new session)
-    Returns the profile_dir string or None.
+    Two‐button chooser:
+      • Default → %LOCALAPPDATA%/Google/Chrome/User Data/Default
+      • Custom  → prompt for folder (blank ⇒ new session)
+    Returns the chosen path, or None.
     """
-    win = tk.Tk()
-    win.title("Select Chrome Profile")
-    win.geometry("350x120")
-    win.resizable(False, False)
+    # hidden root
+    root = tk.Tk()
+    root.withdraw()
+
+    choice = {'profile': None}
+    dlg = tk.Toplevel(root)
+    dlg.title("Select Chrome Profile")
+    dlg.geometry("360x140")
+    dlg.resizable(False, False)
 
     tk.Label(
-        win,
-        text="Choose Chrome profile:\n\n"
-             "Default: closed-Chrome, use your default profile folder\n"
-             "Custom: enter or browse to a different profile (blank→new)",
+        dlg,
+        text=(
+            "Choose a Chrome profile:\n\n"
+            "• Default: all Chrome windows must be closed first\n"
+            "  (uses your existing Default profile folder)\n"
+            "• Custom: browse or type a folder (blank ⇒ new session)"
+        ),
         justify="left",
-        wraplength=340,
+        wraplength=350,
         padx=10, pady=10
     ).pack()
 
-    choice = {"profile": None}
-
-    def on_default():
+    def _use_default():
         local = os.environ.get("LOCALAPPDATA")
         if local:
-            choice["profile"] = os.path.join(
+            choice['profile'] = os.path.join(
                 local, "Google", "Chrome", "User Data", "Default"
             )
         else:
-            choice["profile"] = None
-        win.destroy()
+            choice['profile'] = None
+        dlg.destroy()
 
-    def on_custom():
+    def _use_custom():
         p = simpledialog.askstring(
             "Custom Profile",
-            "Enter full path to Chrome profile folder\n(leave blank for a new session):",
-            parent=win
+            "Enter full path to Chrome profile folder\n(leave blank for new):",
+            parent=dlg
         )
-        choice["profile"] = p or None
-        win.destroy()
+        choice['profile'] = p or None
+        dlg.destroy()
 
-    btns = tk.Frame(win, pady=5)
-    btns.pack()
-    tk.Button(btns, text="Default", width=12, command=on_default).pack(side="left", padx=8)
-    tk.Button(btns, text="Custom",  width=12, command=on_custom).pack(side="left", padx=8)
+    frm = tk.Frame(dlg, pady=5)
+    frm.pack()
+    tk.Button(frm, text="Default", width=14, command=_use_default).pack(side="left", padx=8)
+    tk.Button(frm, text="Custom",  width=14, command=_use_custom).pack(side="left", padx=8)
 
-    win.mainloop()
-    return choice["profile"]
+    # wait for the dialog to go away
+    root.wait_window(dlg)
+    root.destroy()
+    return choice['profile']
         
 def strip_suffix(part: str) -> str:
     """
@@ -794,34 +802,36 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
     print("All done →", out_csv)
 
 if __name__ == '__main__':
-    tk.Tk().withdraw()
+    # 0) pick profile first
+    print("→ About to ask for Chrome profile…")
+    profile = choose_chrome_profile()
+    print("→ Using profile:", profile or "<new session>")
 
-    # 1) Ask for the parts sheet
+    # 1) pick parts sheet
     sheet = filedialog.askopenfilename(
         title='Select parts sheet',
         filetypes=[('Excel/CSV','*.xlsx *.xls *.csv')]
     )
     if not sheet:
+        print("No sheet selected, exiting.")
         exit()
 
-    # 2) Ask for output folder
+    # 2) pick output folder
     out_root = filedialog.askdirectory(title='Select output folder')
     if not out_root:
+        print("No output folder selected, exiting.")
         exit()
 
-    # 3) Ask for Document Library URL
+    # 3) enter the library URL
     url = simpledialog.askstring(
-        title='Document Library URL',
-        prompt='Enter the IRR library URL:'
+        'Document Library URL',
+        'Enter the library URL:'
     )
     if not url:
+        print("No URL provided, exiting.")
         exit()
 
-    # 4) Let user choose the Chrome profile behavior
-    profile = choose_chrome_profile()
-    print(f"→ Using Chrome profile: {profile or '<new session>'}")
-
-    # 5) Kick off main
+    # 4) run!
     main(
         input_sheet=sheet,
         output_root=out_root,
