@@ -44,18 +44,24 @@ COLOR_MAP = {
 # ── Utility Functions ─────────────────────────────────────────────────────────
 def choose_chrome_profile():
     """
-    Pops up a small dialog with three buttons:
-     • Default → uses the Default profile under %LOCALAPPDATA%
-     • New     → returns None (so Selenium will spin up a fresh profile)
-     • Custom  → opens a folder‐picker so the user can browse to their profile
+    Pops up a small modal dialog with three buttons:
+      • Default → uses the Default profile under %LOCALAPPDATA%
+      • New     → returns None (so Selenium uses a fresh profile)
+      • Custom  → opens a folder-picker to browse to your profile
     """
+    import os
+    import tkinter as tk
+    from tkinter import filedialog
+
     root = tk.Tk()
     root.withdraw()
 
-    choice = tk.StringVar()  # we'll wait on this
+    choice = tk.StringVar()  # will hold "default", "new" or "custom"
     dlg = tk.Toplevel(root)
     dlg.title("Select Chrome Profile")
-    dlg.geometry("+{}+{}".format(root.winfo_screenwidth()//2, root.winfo_screenheight()//3))
+    dlg.geometry("+%d+%d" % (root.winfo_screenwidth()//2, root.winfo_screenheight()//3))
+    dlg.transient(root)
+    dlg.grab_set()
 
     tk.Label(
         dlg,
@@ -79,9 +85,11 @@ def choose_chrome_profile():
             command=lambda v=val: choice.set(v)
         ).pack(side="left", padx=5)
 
-    # wait until one of the buttons sets `choice`
-    root.wait_variable(choice)
+    # Wait on the dialog’s own variable
+    dlg.wait_variable(choice)
+
     sel = choice.get()
+    dlg.grab_release()
     dlg.destroy()
     root.destroy()
 
@@ -92,7 +100,7 @@ def choose_chrome_profile():
         )
     elif sel == "new":
         return None
-    else:  # "custom"
+    else:  # custom
         return filedialog.askdirectory(title="Select Chrome profile folder")
         
 def strip_suffix(part: str) -> str:
