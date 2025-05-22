@@ -42,6 +42,50 @@ COLOR_MAP = {
 }
 
 # ── Utility Functions ─────────────────────────────────────────────────────────
+def choose_chrome_profile():
+    """
+    Pops up a small dialog with three buttons:
+     • Default → uses %LOCALAPPDATA%\Google\Chrome\User Data\Default
+     • New     → returns None (so Selenium will spin up a fresh profile)
+     • Custom  → opens a folder‐picker so the user can browse to their profile
+    """
+    root = tk.Tk()
+    root.withdraw()
+
+    choice = tk.StringVar()
+    dlg = tk.Toplevel()
+    dlg.title("Select Chrome Profile")
+    tk.Label(
+        dlg,
+        wraplength=300,
+        text=(
+            "Select Chrome Profile:\n\n"
+            "Default → uses your Default profile (make sure all Chrome instances are closed)\n"
+            "New     → start with a fresh temporary profile\n"
+            "Custom  → pick a profile folder manually"
+        )
+    ).pack(padx=20, pady=10)
+
+    btn_frame = tk.Frame(dlg)
+    btn_frame.pack(pady=(0,10))
+    for text, val in [("Default", "default"), ("New", "new"), ("Custom", "custom")]:
+        tk.Button(btn_frame, text=text, width=10,
+                  command=lambda v=val: (choice.set(v), dlg.destroy())
+        ).pack(side="left", padx=5)
+
+    dlg.grab_set()
+    root.wait_window(dlg)
+
+    sel = choice.get()
+    if sel == "default":
+        return os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data\Default")
+    elif sel == "new":
+        return None
+    elif sel == "custom":
+        return filedialog.askdirectory(title="Select Chrome profile folder")
+    else:
+        # fallback to fresh profile
+        return None
 def strip_suffix(part: str) -> str:
     """
     Remove the last two characters only if they are both letters.
