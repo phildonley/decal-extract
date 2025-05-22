@@ -654,16 +654,36 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
             print(f"    · PDF downloaded → {pdf_path}")
 
             # 2) Render to BGR image
+            print("    · Rendering to image…")
             img_color = render_pdf_color_page(pdf_path, dpi=DPI)
+            time.sleep(STEP_DELAY)
             
-            # 2a) try full‐logo crop by dimension‐line
+            # 2a) Try full-logo crop by looking for the “…mm” dimension line
             y_crop = crop_full_logo(pdf_path, dpi=DPI)
             if y_crop and y_crop > 0:
+                print(f"    · Full-logo crop at y={y_crop}px")
                 region = img_color[:y_crop, :]
             else:
-                # 3) fallback to your existing select_best_crop_box
-                x0, y0, x1, y1 = select_best_crop_box(img_color, template_sets)
-                region = img_color[y0:y1, x0:x1]
+                # 3) Select the best crop box across all template-sets
+                try:
+                    print("    · Selecting best crop box…")
+                    x0, y0, x1, y1 = select_best_crop_box(img_color, template_sets)
+                    region = img_color[y0:y1, x0:x1]
+                except Exception as e:
+                    print(f"    · Crop-by-templates failed ({e}); falling back to blob/full-page…")
+                    gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
+                    _, thresh = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
+                    cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    if cnts:
+                        c = max(cnts, key=cv2.contourArea)
+                        bx, by, bw, bh = cv2.boundingRect(c)
+                        region = img_color[by:by+bh, bx:bx+bw]
+                        print(f"    · Blob crop box: {(bx, by, bx+bw, by+bh)}")
+                    else:
+                        h_img, w_img = img_color.shape[:2]
+                        m = int(0.01 * min(h_img, w_img))
+                        region = img_color[m:h_img-m, m:w_img-m]
+                        print(f"    · Full-page margin crop: {(m, m, w_img-m, h_img-m)}")
 
             # ── 4) Extract region & handle legacy bands ───────────────────────────────
             # first get *all* possible bracket rectangles
