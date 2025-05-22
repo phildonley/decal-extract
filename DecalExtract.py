@@ -144,19 +144,24 @@ def download_pdf_for_part(part, tmp_dir, driver, base_url):
     """
     wait = WebDriverWait(driver, 20)
 
-    # 1) Go back to main list & search
-    driver.get(base_url)
-    wait.until(EC.presence_of_element_located((By.ID, 'docLibContainer_search_field')))
-
-    clean = strip_suffix(part)
-    fld = wait.until(EC.element_to_be_clickable((By.ID, 'docLibContainer_search_field')))
-    fld.clear()
-    fld.send_keys(clean)
-    driver.find_element(By.ID, 'docLibContainer_search_button').click()
-    
-    # ── 1a) if “No data found” banner appears, bail out early
+    # 1️⃣ if no-data banner → skip this part
     if driver.find_elements(By.CSS_SELECTOR, 'div.a-IRR-noDataMsg'):
+        print(f"    · No PDF found for {part}; skipping.")
+        driver.switch_to.default_content()
         return None
+
+    # 2️⃣ if lockout lightbox → restart browser and retry
+    if driver.find_elements(By.CSS_SELECTOR, 'div.sign-in-box.ext-sign-in-box'):
+        print("    · Locked out detected; restarting browser…")
+        driver.quit()
+        time.sleep(30)   # wait before relaunch
+        driver = init_driver(tmp_dir, profile_dir=profile, headless=False)
+        driver.get(base_url)
+        wait_for_login(driver)
+        return download_pdf_for_part(part, tmp_dir, driver, base_url)
+    
+    # continue with locating the download button…
+    dl = wait.until(EC.presence_of_element_located((By.ID, "downloadBtn")))
     
     # 2) Find the <td> whose text == our part, then get its <tr>
     td = wait.until(EC.presence_of_element_located((
