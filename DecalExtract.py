@@ -510,19 +510,54 @@ def wait_for_login(driver, timeout=300):
 
 def safe_download(part, tmp_dir, driver, base_url, profile):
     """
-    Wrap download_pdf_for_part in a try/except.
-    If Selenium hiccups, restart the browser once and retry.
+    Wrap download_pdf_for_part in retries on WebDriverException (locked-out).
     Returns (pdf_path, driver).
     """
-    try:
-        return download_pdf_for_part(part, tmp_dir, driver, base_url), driver
-    except WebDriverException:
-        driver.quit()
-        time.sleep(2)
-        new_driver = init_driver(tmp_dir, profile_dir=profile, headless=False)
-        new_driver.get(base_url)
-        wait_for_login(new_driver)
-        return download_pdf_for_part(part, tmp_dir, new_driver, base_url), new_driver
+    delays = [10, 30, 60]  # seconds to wait before each retry
+    for delay in delays:
+        try:
+            return download_pdf_for_part(part, tmp_dir, driver, base_url), driver
+        except WebDriverException:
+            driver.quit()
+            time.sleep(delay)
+            driver = init_driver(tmp_dir, profile_dir=profile, headless=False)
+            driver.get(base_url)
+            wait_for_login(driver)
+    raise RuntimeError(f"Locked out after retries downloading part {part}")
+    
+def find_aligned_blob_group(img_color, min_area=10000, tol=10, pad=20):
+    """
+    Locate connected components ≥min_area, group those whose
+    bottom-y are within tol pixels of each other. If ≥2 found,
+    return their combined bbox padded by `pad`. Else None.
+    """
+    gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
+    _, th = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
+    cnts, _ = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    boxes = []
+    for c in cnts:
+        x,y,w,h = cv2.boundingRect(c)
+        if w*h < min_area: continue
+        boxes.append((x,y,w,h))
+
+    if len(boxes) < 2:
+        return None
+
+    bottoms = [y+h for x,y,w,h in boxes]
+    avg_b = sum(bottoms)/len(bottoms)
+    group = [b for b in boxes if abs((b[1]+b[3]) - avg_b) <= tol]
+
+    if len(group) < 2:
+        return None
+
+    xs = [x for x,y,w,h in group] + [x+w for x,y,w,h in group]
+    ys = [y for x,y,w,h in group] + [y+h for x,y,w,h in group]
+    x0 = max(min(xs)-pad, 0)
+    y0 = max(min(ys)-pad, 0)
+    x1 = min(max(xs)+pad, img_color.shape[1])
+    y1 = min(max(ys)+pad, img_color.shape[0])
+    return (x0, y0, x1, y1)
 
 def main(input_sheet, output_root, base_url, profile=None, seq=105):
     # ─── Prepare output directories ────────────────────────────────────────────
@@ -610,24 +645,30 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
             h_img, w_img = img_color.shape[:2]
             time.sleep(STEP_DELAY)
 
-            # 3) Select the best crop box across all template‐sets
-            try:
-                print("    · Selecting best crop box…")
-                x0, y0, x1, y1 = select_best_crop_box(img_color, template_sets)
-            except Exception as e:
-                print(f"    · Crop‐by‐templates failed ({e}); falling back to blob/full‐page…")
-                gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
-                _, thresh = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
-                cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                if cnts:
-                    c = max(cnts, key=cv2.contourArea)
-                    bx, by, bw, bh = cv2.boundingRect(c)
-                    x0, y0, x1, y1 = bx, by, bx + bw, by + bh
-                    print(f"    · Blob crop box: {(x0, y0, x1, y1)}")
-                else:
-                    margin = int(0.01 * min(h_img, w_img))
-                    x0, y0, x1, y1 = margin, margin, w_img - margin, h_img - margin
-                    print(f"    · Full‐page margin box: {(x0, y0, x1, y1)}")
+            # ── 3) Crop selection: special large-logo first, else template-based
+            # try the blob-group detector for full-width logos
+            logo_box = find_aligned_blob_group(img_color)
+            if logo_box:
+                print("    · Detected large aligned-blob group → direct crop")
+                x0,y0,x1,y1 = logo_box
+            else:
+                try:
+                    print("    · Selecting best crop box…")
+                    x0, y0, x1, y1 = select_best_crop_box(img_color, template_sets)
+                except Exception as e:
+                    print(f"    · Crop-by-templates failed ({e}); falling back to blob/full-page…")
+                    gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
+                    _, thresh = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
+                    cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    if cnts:
+                        c = max(cnts, key=cv2.contourArea)
+                        bx, by, bw, bh = cv2.boundingRect(c)
+                        x0, y0, x1, y1 = bx, by, bx+bw, by+bh
+                        print(f"    · Blob crop box: {(x0, y0, x1, y1)}")
+                    else:
+                        margin = int(0.01 * min(h_img, w_img))
+                        x0, y0, x1, y1 = margin, margin, w_img-margin, h_img-margin
+                        print(f"    · Full-page margin box: {(x0, y0, x1, y1)}")
 
             # ── 4) Extract region & handle legacy bands ───────────────────────────────
             # first get *all* possible bracket rectangles
