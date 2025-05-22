@@ -668,64 +668,86 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
 
             print(f"    · PDF downloaded → {pdf_path}")
 
-            # 2) Render to BGR image
+            # 2) Render to image
             print("    · Rendering to image…")
             img = render_pdf_color_page(pdf_path, dpi=DPI)
             h_img, w_img = img.shape[:2]
             time.sleep(STEP_DELAY)
-        
-            # 3) Full-logo via “…mm” line
+    
+            # 3) Parse dimensions right away
+            h_in, w_in = parse_dimensions_from_pdf(pdf_path)
+            print(f"    · Parsed dims: {h_in}\" x {w_in}\"")
+            time.sleep(STEP_DELAY)
+    
+            # 4) Decide which crop method to use
+            pad = 20  # padding for blob-based crops
+            crop_img = None
+    
+            # a) full-logo crop via “…mm” line
             y_crop = crop_full_logo(pdf_path, dpi=DPI)
-            if y_crop and y_crop>0:
+            if y_crop and y_crop > 0:
                 print(f"    · Full-logo crop at y={y_crop}px")
                 crop_img = img[:y_crop, :]
-        
+    
+            # b) large decal spanning multiple blobs
             else:
-                # 4) Huge decal spanning many blobs?
-                grp = find_aligned_blob_group(img, min_area=5000, tol=10, pad=20)
+                grp = find_aligned_blob_group(img, min_area=5000, tol=10, pad=pad)
                 if grp:
                     x0,y0,x1,y1 = grp
                     print(f"    · Aligned blob group crop: {(x0,y0,x1,y1)}")
+                    crop_img = img[max(0,y0-pad):min(y1+pad,h_img),
+                                   max(0,x0-pad):min(x1+pad,w_img)]
+    
+            # c) legacy multi-layer via multiple template sets
+            if crop_img is None:
+                boxes = select_all_crop_candidates(img, template_sets, penalty_thresh=0.1)
+                if len(boxes) > 1:
+                    print("    · Legacy multi-layer detected → compositing layers…")
+                    layers = []
+                    for bx0,by0,bx1,by1 in boxes:
+                        region = img[by0:by1, bx0:bx1]
+                        color = extract_color_label(pdf_path, crop_y0=by0)
+                        layers.append(recolor_layer(region, COLOR_MAP[color]))
+                    base = layers[0]
+                    for layer in layers[1:]:
+                        alpha = layer[:,:,3].astype(float)/255.0
+                        for c in range(3):
+                            base[:,:,c] = layer[:,:,c]*alpha + base[:,:,c]*(1-alpha)
+                    crop_img = cv2.cvtColor(base, cv2.COLOR_BGRA2BGR)
+    
+            # d) single best bracket crop
+            if crop_img is None:
+                try:
+                    print("    · Bracket-template crop…")
+                    x0,y0,x1,y1 = select_best_crop_box(img, template_sets)
+                    print(f"    · Bracket crop box: {(x0,y0,x1,y1)}")
                     crop_img = img[y0:y1, x0:x1]
-        
-                else:
-                    # 5) Legacy multi-layer if multiple template matches
-                    boxes = select_all_crop_candidates(img, template_sets, penalty_thresh=0.1)
-                    if len(boxes) > 1:
-                        print("    · Legacy multi-layer detected → compositing layers…")
-                        layers = []
-                        for bx0,by0,bx1,by1 in boxes:
-                            region = img[by0:by1, bx0:bx1]
-                            color = extract_color_label(pdf_path, crop_y0=by0)
-                            layers.append(recolor_layer(region, COLOR_MAP[color]))
-                        # composite in stack order (black bottom, then colors on top)
-                        base = layers[0]
-                        for layer in layers[1:]:
-                            alpha = layer[:,:,3]/255.0
-                            for c in range(3):
-                                base[:,:,c] = layer[:,:,c]*alpha + base[:,:,c]*(1-alpha)
-                        crop_img = cv2.cvtColor(base, cv2.COLOR_BGRA2BGR)
-        
-                    else:
-                        # 6) Single best bracket crop
-                        print("    · Bracket-template crop…")
-                        x0,y0,x1,y1 = select_best_crop_box(img, template_sets)
-                        print(f"    · Bracket crop box: {(x0,y0,x1,y1)}")
-                        crop_img = img[y0:y1, x0:x1]
-        
-            # 7) Save JPEG
+                except RuntimeError:
+                    # e) fallback to single blob bbox + margin
+                    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                    blob = crop_blob_bbox(gray) or (0,0,w_img,h_img)
+                    bx,by,bx2,by2 = blob
+                    print(f"    · Blob-fallback crop: {blob}")
+                    crop_img = img[max(0,by-pad):min(by2+pad,h_img),
+                                   max(0,bx-pad):min(bx2+pad,w_img)]
+    
+            # 5) Save JPEG
             jpg_name = f"{tms}.{part}.{seq}.jpg"
             out_jpg  = os.path.join(imgs_dir, jpg_name)
             print(f"    · Writing JPEG → {out_jpg}")
             cv2.imwrite(out_jpg, crop_img)
             time.sleep(STEP_DELAY)
-
-            # 8) Clean up PDF
+    
+            # 6) Clean up PDF
             print("    · Removing temp PDF")
             os.remove(pdf_path)
             time.sleep(STEP_DELAY)
-
-            # 9) Record row
+    
+            # 7) Record row (dimensions already parsed)
+            vol  = h_in * w_in * THICKNESS_IN
+            wgt  = vol * MATERIAL_DENSITY
+            dimw = vol / FACTOR
+    
             records.append({
                 'ITEM_ID':         part,
                 'ITEM_TYPE':       '',
