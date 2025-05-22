@@ -805,10 +805,7 @@ if __name__ == '__main__':
     if not url:
         exit()
 
-    profile = simpledialog.askstring(
-        'Chrome Profile (optional)',
-        'Enter Chrome profile path, or leave blank:'
-    )
+    profile = choose_chrome_profile()
 
     main(
         input_sheet=sheet,
