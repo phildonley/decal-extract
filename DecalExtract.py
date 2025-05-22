@@ -44,45 +44,63 @@ COLOR_MAP = {
 # ── Utility Functions ─────────────────────────────────────────────────────────
 def choose_chrome_profile():
     """
-    Prompt the user to pick how Chrome should launch:
-      • 'default' → use the default profile (must close all Chrome windows first)
-      • 'new'     → launch a fresh, clean session (no profile)
-      • 'custom'  → pick any profile directory manually
+    Pop up a window with three buttons:
+      • Default → use your default Chrome profile (close Chrome first)
+      • New     → launch a fresh session (no profile)
+      • Custom  → browse to a profile folder
     Returns the profile_dir string or None.
     """
-    root = tk.Tk()
-    root.withdraw()
+    win = tk.Tk()
+    win.title("Select Chrome Profile")
+    win.geometry("400x150")
+    win.resizable(False, False)
 
-    choice = simpledialog.askstring(
-        title="Select Chrome Profile",
-        prompt=(
-            "Choose profile option:\n"
-            "  • default → use your default Chrome profile (close Chrome first)\n"
-            "  • new     → start a fresh session\n"
-            "  • custom  → browse to a profile folder\n\n"
-            "Enter default, new, or custom:"
+    # Instruction label
+    tk.Label(
+        win,
+        text=(
+            "Select Chrome Profile\n\n"
+            "Default: use your default profile (close all Chrome windows first)\n"
+            "New:     start a fresh session (no profile)\n"
+            "Custom: choose a profile folder manually"
         ),
-        parent=root
-    )
-    root.destroy()
-    if not choice:
-        return None
+        justify="left",
+        padx=10,
+        pady=10,
+        wraplength=380
+    ).pack()
 
-    choice = choice.strip().lower()
-    if choice == "default":
-        # Windows path; adjust for Mac/Linux if needed
-        return os.path.join(
+    choice = {"profile": None}
+
+    def on_default():
+        choice["profile"] = os.path.join(
             os.environ.get("LOCALAPPDATA", ""),
             "Google", "Chrome", "User Data", "Default"
         )
-    elif choice == "new":
-        return None
-    elif choice == "custom":
-        return filedialog.askdirectory(
+        win.destroy()
+
+    def on_new():
+        choice["profile"] = None
+        win.destroy()
+
+    def on_custom():
+        path = filedialog.askdirectory(
             title="Select Chrome profile directory"
         )
-    else:
-        return None
+        # if user cancels, path == ''
+        choice["profile"] = path or None
+        win.destroy()
+
+    # Buttons frame
+    btn_frame = tk.Frame(win, pady=10)
+    btn_frame.pack()
+    tk.Button(btn_frame, text="Default", width=10, command=on_default).pack(side="left", padx=5)
+    tk.Button(btn_frame, text="New",     width=10, command=on_new).pack(    side="left", padx=5)
+    tk.Button(btn_frame, text="Custom",  width=10, command=on_custom).pack( side="left", padx=5)
+
+    # Start the dialog
+    win.mainloop()
+    return choice["profile"]
         
 def strip_suffix(part: str) -> str:
     """
@@ -813,7 +831,7 @@ if __name__ == '__main__':
     print(f"→ Using Chrome profile: {profile or '<new session>'}")
 
     # 5) Kick off main
-    main(
+   main(
         input_sheet=sheet,
         output_root=out_root,
         base_url=url,
