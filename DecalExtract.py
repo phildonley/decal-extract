@@ -52,46 +52,48 @@ def choose_chrome_profile():
     root = tk.Tk()
     root.withdraw()
 
-    choice = tk.StringVar()
-    dlg = tk.Toplevel()
+    choice = tk.StringVar()  # we'll wait on this
+    dlg = tk.Toplevel(root)
     dlg.title("Select Chrome Profile")
+    dlg.geometry("+{}+{}".format(root.winfo_screenwidth()//2, root.winfo_screenheight()//3))
+
     tk.Label(
         dlg,
         wraplength=300,
+        justify="left",
         text=(
             "Select Chrome Profile:\n\n"
             "Default → uses your Default profile (close all Chrome first)\n"
             "New     → start with a fresh temporary profile\n"
             "Custom  → pick a profile folder manually"
         )
-    ).pack(padx=20, pady=10)
+    ).pack(padx=20, pady=(20,10))
 
     btn_frame = tk.Frame(dlg)
-    btn_frame.pack(pady=(0,10))
-    for text, val in [("Default","default"),("New","new"),("Custom","custom")]:
+    btn_frame.pack(pady=(0,20))
+    for text, val in [("Default","default"), ("New","new"), ("Custom","custom")]:
         tk.Button(
             btn_frame,
             text=text,
             width=10,
-            command=lambda v=val: (choice.set(v), dlg.destroy())
+            command=lambda v=val: choice.set(v)
         ).pack(side="left", padx=5)
 
-    dlg.grab_set()
-    root.wait_window(dlg)
-
+    # wait until one of the buttons sets `choice`
+    root.wait_variable(choice)
     sel = choice.get()
+    dlg.destroy()
+    root.destroy()
+
     if sel == "default":
-        # build the path rather than a raw "\U..." literal
         return os.path.join(
-            os.environ["LOCALAPPDATA"],
+            os.environ.get("LOCALAPPDATA",""),
             "Google", "Chrome", "User Data", "Default"
         )
     elif sel == "new":
         return None
-    elif sel == "custom":
+    else:  # "custom"
         return filedialog.askdirectory(title="Select Chrome profile folder")
-    else:
-        return None
         
 def strip_suffix(part: str) -> str:
     """
