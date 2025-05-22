@@ -822,7 +822,7 @@ if __name__ == '__main__':
     print(f"→ Using Chrome profile: {profile or '<new session>'}")
 
     # 5) Kick off main
-   main(
+    main(
         input_sheet=sheet,
         output_root=out_root,
         base_url=url,
