@@ -328,6 +328,60 @@ def detect_best_crop(img_color, template_sets):
     print(f"    · Chosen crop={best_rect} (score={best_score:.2f})")
     return best_rect
 
+def select_all_crop_candidates(img_color, template_sets, penalty_thresh=0.1):
+    """
+    Returns a list of non-overlapping (x0,y0,x1,y1) rectangles
+    whose penalty (edge-ink on crop border) < penalty_thresh, 
+    all having virtually the same aspect ratio.
+    """
+    gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
+    _, blob = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
+    blob = (blob>0).astype(np.uint8)
+    H,W = gray.shape
+    cands = []
+    for tpl, offs in template_sets:
+        try:
+            corners = detect_with_one_set(gray, tpl, offs)
+            x0 = int((corners['top_left'][0]+corners['bottom_left'][0])/2)
+            x1 = int((corners['top_right'][0]+corners['bottom_right'][0])/2)
+            y0 = int((corners['top_left'][1]+corners['top_right'][1])/2)
+            y1 = int((corners['bottom_left'][1]+corners['bottom_right'][1])/2)
+        except:
+            continue
+        # penalty = ink on 5-pixel wide border
+        e=5
+        top    = blob[y0:y0+e, x0:x1]
+        bot    = blob[y1-e:y1, x0:x1]
+        left   = blob[y0:y1, x0:x0+e]
+        right  = blob[y0:y1, x1-e:x1]
+        penalty = float(top.sum()+bot.sum()+left.sum()+right.sum())/((x1-x0)*(y1-y0))
+        if penalty>penalty_thresh or x1<=x0 or y1<=y0:
+            continue
+        cands.append(( (x1-x0)/(y1-y0), (x0,y0,x1,y1) ))
+    if not cands:
+        return []
+    # group by ratio (within 5%)
+    base_ratio = cands[0][0]
+    boxes=[]
+    for ratio, box in cands:
+        if abs(ratio-base_ratio)/base_ratio<0.05:
+            if all(rect_intersection(box, b)==0 for b in boxes):
+                boxes.append(box)
+    return sorted(boxes, key=lambda b: b[0])
+    
+def recolor_layer(image, color_bgr):
+    """
+    Make every true‐black pixel → color_bgr, everything else transparent.
+    Returns 4-channel BGRA.
+    """
+    bgr = image.copy()
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    alpha = (gray==0).astype(np.uint8)*255
+    # overlay fill color where alpha=255
+    for c in range(3):
+        bgr[:,:,c] = np.where(alpha==255, color_bgr[c], 0)
+    return cv2.cvtColor(bgr, cv2.COLOR_BGR2BGRA)
+
 def parse_dimensions_from_pdf(pdf_path):
     pat = r"Dimensions\s*\(h\s*x\s*w\)\s*:\s*([\d.]+)\s*[xX]\s*([\d.]+)"
     with pdfplumber.open(pdf_path) as pdf:
@@ -575,28 +629,32 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
                     x0, y0, x1, y1 = margin, margin, w_img - margin, h_img - margin
                     print(f"    · Full‐page margin box: {(x0, y0, x1, y1)}")
 
-            # 4) Extract region & handle legacy bands
-            region = img_color[y0:y1, x0:x1]
-            rh, rw = region.shape[:2]
-            if rw > rh * 1.8:
-                print("    · Detected legacy multi‐layer → slicing bands…")
-                third = rw // 3
-                green = region[:, third:2*third]
-                black = region[:, 2*third:3*third]
-                def recolor_band(band, bgr):
-                    g = cv2.cvtColor(band, cv2.COLOR_BGR2GRAY)
-                    _, mask = cv2.threshold(g, 250, 255, cv2.THRESH_BINARY_INV)
-                    fill = np.zeros_like(band)
-                    fill[:] = bgr
-                    return np.where(mask[:, :, None] > 0, fill, band)
-                band_g = recolor_band(green, COLOR_MAP['green'])
-                band_b = recolor_band(black, COLOR_MAP['black'])
-                stacked = band_b.copy()
-                mask_g = cv2.cvtColor(band_g, cv2.COLOR_BGR2GRAY) < 250
-                for c in range(3):
-                    stacked[:, :, c] = np.where(mask_g, band_g[:, :, c], stacked[:, :, c])
-                crop = stacked
+            # ── 4) Extract region & handle legacy bands ───────────────────────────────
+            # first get *all* possible bracket rectangles
+            band_rects = select_all_crop_candidates(img_color, template_sets)
+            if len(band_rects) >= 2:
+                print(f"    · Legacy multi-layer → found {len(band_rects)} bands")
+                layers = []
+                # for each band, find the label *above* it
+                for (x0,y0,x1,y1) in band_rects:
+                    # crop slightly above to scan color word
+                    label = extract_color_label(pdf_path, crop_y0=y0)
+                    color = COLOR_MAP.get(label, COLOR_MAP['black'])
+                    band_img = img_color[y0:y1, x0:x1]
+                    layers.append(recolor_layer(band_img, color))
+                # now layer them in x-order: leftmost on bottom
+                canvas_h = max(l.shape[0] for l in layers)
+                canvas_w = sum(l.shape[1] for l in layers)
+                canvas = np.zeros((canvas_h, canvas_w, 4), dtype=np.uint8)
+                xpos = 0
+                for l in layers:
+                    h,w = l.shape[:2]
+                    canvas[0:h, xpos:xpos+w] = l
+                    xpos += w
+                crop = canvas  # BGRA final
             else:
+                # single-layer (fall back)
+                region = img_color[y0:y1, x0:x1]
                 crop = region
 
             # 5) Save JPEG
