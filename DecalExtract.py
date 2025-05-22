@@ -525,21 +525,29 @@ def wait_for_login(driver, timeout=300):
 def safe_download(part, tmp_dir, driver, base_url, profile):
     """
     Wrap download_pdf_for_part in retries on WebDriverException (locked-out).
-    Closes Chrome completely, waits an increasing delay, then retries, picking up where it left off.
+    On each retry: quit Chrome, wait 10s→20s→30s… then relaunch and login.
     Returns (pdf_path, driver).
     """
-    delay = 10
-    while True:
+    delays = [10, 20, 30, 40, 50]  # increase as needed
+    for delay in delays:
         try:
+            # attempt download (may raise WebDriverException if locked out)
             return download_pdf_for_part(part, tmp_dir, driver, base_url), driver
-        except WebDriverException:
-            driver.quit()
-            print(f"    · Locked out, retrying in {delay}s…")
+        except WebDriverException as e:
+            print(f"    · Locked out ({e}); closing browser and retrying in {delay}s…")
+            try:
+                driver.quit()
+            except:
+                pass
             time.sleep(delay)
-            delay += 10
+            # restart browser and re-login
             driver = init_driver(tmp_dir, profile_dir=profile, headless=False)
             driver.get(base_url)
             wait_for_login(driver)
+    # final attempt (no further delay), let exception bubble if it fails again
+    print("    · Final retry…")
+    return download_pdf_for_part(part, tmp_dir, driver, base_url), driver
+
     
 def find_aligned_blob_group(img_color, min_area=10000, tol=10, pad=20):
     """
