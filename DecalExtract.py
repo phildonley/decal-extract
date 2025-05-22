@@ -471,8 +471,35 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
 
         try:
             # 1) Download PDF (auto-retries on WebDriver errors)
-            pdf_path, driver = safe_download(part, tmp_dir, driver, base_url, profile)
-            print(f"   · PDF downloaded → {pdf_path}")
+            pdf_path = safe_download(part, tmp_dir, driver, base_url, profile)
+            if pdf_path is None:
+                # no document for this part → record empty row & continue
+                records.append({
+                    'ITEM_ID':        part,
+                    'ITEM_TYPE':      '',
+                    'DESCRIPTION':    '',
+                    'NET_LENGTH':     0,
+                    'NET_WIDTH':      0,
+                    'NET_HEIGHT':     THICKNESS_IN,
+                    'NET_WEIGHT':     0,
+                    'NET_VOLUME':     0,
+                    'NET_DIM_WGT':    0,
+                    'DIM_UNIT':       'in',
+                    'WGT_UNIT':       'lb',
+                    'VOL_UNIT':       'in',
+                    'FACTOR':         FACTOR,
+                    'SITE_ID':        SITE_ID,
+                    'TIME_STAMP':     ts,
+                    'OPT_INFO_2':     'N',
+                    'OPT_INFO_3':     'N',
+                    'OPT_INFO_8':     0,
+                    'IMAGE_FILE_NAME':'',
+                    'UPDATED':        'N'
+                })
+                print(f"[{i}] ⚠️ No PDF — skipped")
+                continue
+        
+            print(f"    · PDF downloaded → {pdf_path}")
             time.sleep(STEP_DELAY)
 
             # 2) Render to BGR image
