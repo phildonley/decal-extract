@@ -162,8 +162,9 @@ def download_pdf_for_part(part, tmp_dir, driver, base_url):
     if driver.find_elements(By.CSS_SELECTOR, 'div.a-IRR-noDataMsg'):
         return None
 
-    # 1b) detect locked-out sign-in lightbox
+    # 1b) detect locked‐out sign‐in lightbox
     if driver.find_elements(By.CSS_SELECTOR, 'div.sign-in-box.ext-sign-in-box'):
+        # only this exact condition triggers a restart
         raise WebDriverException("Session locked, need to re-login")
 
     # 2) Click the row’s Documents button
@@ -524,21 +525,33 @@ def wait_for_login(driver, timeout=300):
     )
 
 def safe_download(part, tmp_dir, driver, base_url, profile):
+    """
+    Wrap download_pdf_for_part so that only on the explicit
+    'Session locked' error do we progressively restart Chrome.
+    Returns (pdf_path, driver) or raises on other errors.
+    """
     delays = [10, 20, 30, 40, 50]
     for delay in delays:
         try:
-            return download_pdf_for_part(part, tmp_dir, driver, base_url), driver
-        except (WebDriverException, TimeoutException) as e:
-            print(f"    · Locked out ({e}); closing browser and retrying in {delay}s…")
-            try: driver.quit()
-            except: pass
+            pdf_path = download_pdf_for_part(part, tmp_dir, driver, base_url)
+            return pdf_path, driver
+        except WebDriverException as e:
+            if "Session locked" not in str(e):
+                # any other Selenium error should abort
+                raise
+            print(f"    · Locked out; closing browser and retrying in {delay}s…")
+            try:
+                driver.quit()
+            except:
+                pass
             time.sleep(delay)
             driver = init_driver(tmp_dir, profile_dir=profile, headless=False)
             driver.get(base_url)
-            WebDriverWait(driver, 10).until(
+            # wait to confirm we're back at the library search field
+            WebDriverWait(driver, 30).until(
                 EC.presence_of_element_located((By.ID, 'docLibContainer_search_field'))
             )
-    # final attempt without delay
+    # final attempt
     return download_pdf_for_part(part, tmp_dir, driver, base_url), driver
     
 def find_aligned_blob_group(img_color, min_area=10000, tol=10, pad=20):
