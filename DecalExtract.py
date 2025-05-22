@@ -45,7 +45,7 @@ COLOR_MAP = {
 def choose_chrome_profile():
     """
     Pops up a small dialog with three buttons:
-     • Default → uses %LOCALAPPDATA%\Google\Chrome\User Data\Default
+     • Default → uses the Default profile under %LOCALAPPDATA%
      • New     → returns None (so Selenium will spin up a fresh profile)
      • Custom  → opens a folder‐picker so the user can browse to their profile
     """
@@ -60,7 +60,7 @@ def choose_chrome_profile():
         wraplength=300,
         text=(
             "Select Chrome Profile:\n\n"
-            "Default → uses your Default profile (make sure all Chrome instances are closed)\n"
+            "Default → uses your Default profile (close all Chrome first)\n"
             "New     → start with a fresh temporary profile\n"
             "Custom  → pick a profile folder manually"
         )
@@ -68,9 +68,12 @@ def choose_chrome_profile():
 
     btn_frame = tk.Frame(dlg)
     btn_frame.pack(pady=(0,10))
-    for text, val in [("Default", "default"), ("New", "new"), ("Custom", "custom")]:
-        tk.Button(btn_frame, text=text, width=10,
-                  command=lambda v=val: (choice.set(v), dlg.destroy())
+    for text, val in [("Default","default"),("New","new"),("Custom","custom")]:
+        tk.Button(
+            btn_frame,
+            text=text,
+            width=10,
+            command=lambda v=val: (choice.set(v), dlg.destroy())
         ).pack(side="left", padx=5)
 
     dlg.grab_set()
@@ -78,14 +81,18 @@ def choose_chrome_profile():
 
     sel = choice.get()
     if sel == "default":
-        return os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data\Default")
+        # build the path rather than a raw "\U..." literal
+        return os.path.join(
+            os.environ["LOCALAPPDATA"],
+            "Google", "Chrome", "User Data", "Default"
+        )
     elif sel == "new":
         return None
     elif sel == "custom":
         return filedialog.askdirectory(title="Select Chrome profile folder")
     else:
-        # fallback to fresh profile
         return None
+        
 def strip_suffix(part: str) -> str:
     """
     Remove the last two characters only if they are both letters.
