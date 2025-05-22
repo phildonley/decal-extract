@@ -655,72 +655,66 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
 
             # 2) Render to BGR image
             print("    · Rendering to image…")
-            img_color = render_pdf_color_page(pdf_path, dpi=DPI)
+            img = render_pdf_color_page(pdf_path, dpi=DPI)
+            h_img, w_img = img.shape[:2]
             time.sleep(STEP_DELAY)
             
-            # 2a) Try full-logo crop by looking for the “…mm” dimension line
+            # 3) Try full-logo crop via the “…mm” line
             y_crop = crop_full_logo(pdf_path, dpi=DPI)
             if y_crop and y_crop > 0:
                 print(f"    · Full-logo crop at y={y_crop}px")
-                region = img_color[:y_crop, :]
+                crop_region = img[:y_crop, :]
             else:
-                # 3) Select the best crop box across all template-sets
+                # 4) Template-based bracket crop
                 try:
                     print("    · Selecting best crop box…")
-                    x0, y0, x1, y1 = select_best_crop_box(img_color, template_sets)
-                    region = img_color[y0:y1, x0:x1]
+                    x0, y0, x1, y1 = select_best_crop_box(img, template_sets)
+                    print(f"    · Bracket crop box: {(x0, y0, x1, y1)}")
+                    crop_region = img[y0:y1, x0:x1]
                 except Exception as e:
-                    print(f"    · Crop-by-templates failed ({e}); falling back to blob/full-page…")
-                    gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
+                    print(f"    · Template crop failed ({e}); falling back to blob/full-page…")
+                    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
                     _, thresh = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
                     cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                     if cnts:
-                        c = max(cnts, key=cv2.contourArea)
-                        bx, by, bw, bh = cv2.boundingRect(c)
-                        region = img_color[by:by+bh, bx:bx+bw]
+                        bx, by, bw, bh = cv2.boundingRect(max(cnts, key=cv2.contourArea))
                         print(f"    · Blob crop box: {(bx, by, bx+bw, by+bh)}")
+                        crop_region = img[by:by+bh, bx:bx+bw]
                     else:
-                        h_img, w_img = img_color.shape[:2]
                         m = int(0.01 * min(h_img, w_img))
-                        region = img_color[m:h_img-m, m:w_img-m]
                         print(f"    · Full-page margin crop: {(m, m, w_img-m, h_img-m)}")
-
-            # ── 4) Extract region & handle legacy bands ───────────────────────────────
-            # first get *all* possible bracket rectangles
-            band_rects = select_all_crop_candidates(img_color, template_sets)
-            if len(band_rects) >= 2:
-                print(f"    · Legacy multi-layer → found {len(band_rects)} bands")
-                layers = []
-                # for each band, find the label *above* it
-                for (x0,y0,x1,y1) in band_rects:
-                    # crop slightly above to scan color word
-                    label = extract_color_label(pdf_path, crop_y0=y0)
-                    color = COLOR_MAP.get(label, COLOR_MAP['black'])
-                    band_img = img_color[y0:y1, x0:x1]
-                    layers.append(recolor_layer(band_img, color))
-                # now layer them in x-order: leftmost on bottom
-                canvas_h = max(l.shape[0] for l in layers)
-                canvas_w = sum(l.shape[1] for l in layers)
-                canvas = np.zeros((canvas_h, canvas_w, 4), dtype=np.uint8)
-                xpos = 0
-                for l in layers:
-                    h,w = l.shape[:2]
-                    canvas[0:h, xpos:xpos+w] = l
-                    xpos += w
-                crop = canvas  # BGRA final
+                        crop_region = img[m:h_img-m, m:w_img-m]
+            
+            # 5) Handle legacy multi-layer bands
+            rh, rw = crop_region.shape[:2]
+            if rw > rh * 1.8:
+                print("    · Detected legacy multi-layer → slicing bands…")
+                third = rw // 3
+                green = crop_region[:, third:2*third]
+                black = crop_region[:, 2*third:3*third]
+                def recolor(band, bgr):
+                    g = cv2.cvtColor(band, cv2.COLOR_BGR2GRAY)
+                    _, mask = cv2.threshold(g, 250, 255, cv2.THRESH_BINARY_INV)
+                    fill = np.zeros_like(band); fill[:] = bgr
+                    return np.where(mask[:,:,None]>0, fill, band)
+                band_g = recolor(green, COLOR_MAP['green'])
+                band_b = recolor(black, COLOR_MAP['black'])
+                stacked = band_b.copy()
+                mask_g = cv2.cvtColor(band_g, cv2.COLOR_BGR2GRAY) < 250
+                for c in range(3):
+                    stacked[:,:,c] = np.where(mask_g, band_g[:,:,c], stacked[:,:,c])
+                crop = stacked
             else:
-                # single-layer (fall back)
-                region = img_color[y0:y1, x0:x1]
-                crop = region
-
-            # 5) Save JPEG
+                crop = crop_region
+            
+            # 6) Save JPEG
             jpg_name = f"{tms}.{part}.{seq}.jpg"
             out_jpg  = os.path.join(imgs_dir, jpg_name)
             print(f"    · Writing JPEG → {out_jpg}")
             cv2.imwrite(out_jpg, crop)
             time.sleep(STEP_DELAY)
 
-            # 6) Parse dim/compute
+            # 7) Parse dim/compute
             print("    · Parsing dimensions & computing…")
             h_in, w_in = parse_dimensions_from_pdf(pdf_path)
             vol  = h_in * w_in * THICKNESS_IN
@@ -728,12 +722,12 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
             dimw = vol / FACTOR
             time.sleep(STEP_DELAY)
 
-            # 7) Clean up PDF
+            # 8) Clean up PDF
             print("    · Removing temp PDF")
             os.remove(pdf_path)
             time.sleep(STEP_DELAY)
 
-            # 8) Record row
+            # 9) Record row
             records.append({
                 'ITEM_ID':         part,
                 'ITEM_TYPE':       '',
