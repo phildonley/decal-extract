@@ -803,28 +803,44 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
     df_out.to_csv(out_csv, index=False)
     print("All done →", out_csv)
 
-
-# ── Entry Point ────────────────────────────────────────────────────────────────
 if __name__ == '__main__':
+    # ── Entry Point ────────────────────────────────────────────────────────────────
+    import tkinter as tk
+    from tkinter import filedialog, simpledialog
+
+    # Hide the root TK window
     tk.Tk().withdraw()
+
+    # Debug print to confirm we entered the script
+    print("▶ Entered __main__")
+
+    # 1) Ask for the parts sheet
     sheet = filedialog.askopenfilename(
         title='Select parts sheet',
-        filetypes=[('Excel/CSV','*.xlsx *.xls *.csv')]
+        filetypes=[('Excel/CSV', '*.xlsx *.xls *.csv')]
     )
+    print("▶ got sheet:", sheet)
     if not sheet:
         exit()
 
+    # 2) Ask for output directory
     out_root = filedialog.askdirectory(title='Select output folder')
+    print("▶ got out_root:", out_root)
     if not out_root:
         exit()
 
+    # 3) Ask for base URL
     url = simpledialog.askstring('Document Library URL', 'Enter the library URL:')
+    print("▶ got url:", url)
     if not url:
         exit()
 
+    # 4) Choose Chrome profile
+    print("▶ About to call choose_chrome_profile()")
     profile = choose_chrome_profile()
-    print("▶️  chrome profile =", repr(profile))
+    print("▶ chrome profile =", repr(profile))
 
+    # 5) Kick off main process
     main(
         input_sheet=sheet,
         output_root=out_root,
