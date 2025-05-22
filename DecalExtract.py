@@ -153,16 +153,16 @@ def download_pdf_for_part(part, tmp_dir, driver, base_url):
     fld.clear()
     fld.send_keys(clean)
     driver.find_element(By.ID, 'docLibContainer_search_button').click()
-
-    # 2) WAIT for either a result row _or_ the “no data” message
-    try:
-        wait.until(EC.any_of(
-            EC.presence_of_element_located((By.XPATH, "//td[normalize-space(text())='" + clean + "']")),
-            EC.presence_of_element_located((By.CSS_SELECTOR, "div.a-IRR-noDataMsg"))
-        ))
-    except:
-        # neither appeared in time
-        raise RuntimeError(f"Search stalled for part {clean}")
+    
+    # ── 1a) if “No data found” banner appears, bail out early
+    if driver.find_elements(By.CSS_SELECTOR, 'div.a-IRR-noDataMsg'):
+        return None
+    
+    # 2) Find the <td> whose text == our part, then get its <tr>
+    td = wait.until(EC.presence_of_element_located((
+        By.XPATH,
+        f"//td[normalize-space(text())='{clean}']"
+    )))
 
     # 3) if “no data” banner is present, bail out
     if driver.find_elements(By.CSS_SELECTOR, "div.a-IRR-noDataMsg"):
@@ -463,28 +463,18 @@ def safe_download(part, tmp_dir, driver, base_url, profile):
     """
     Wrap download_pdf_for_part in a try/except.
     If Selenium hiccups, restart the browser once and retry.
-    Returns a tuple (pdf_path, driver), where driver may be a new session.
+    Returns a tuple (pdf_path, driver).
     """
     try:
-        pdf_path = download_pdf_for_part(part, tmp_dir, driver, base_url)
-        return pdf_path, driver
-    except WebDriverException as e:
-        print(f"    · WebDriver hiccup ({e}); restarting browser…")
-        # tear down the old session
-        try:
-            driver.quit()
-        except:
-            pass
+        return download_pdf_for_part(part, tmp_dir, driver, base_url), driver
+    except WebDriverException:
+        driver.quit()
         time.sleep(2)
-
         # start a fresh browser session
         new_driver = init_driver(tmp_dir, profile_dir=profile, headless=False)
         new_driver.get(base_url)
         wait_for_login(new_driver)
-
-        # retry the download
-        pdf_path = download_pdf_for_part(part, tmp_dir, new_driver, base_url)
-        return pdf_path, new_driver
+        return download_pdf_for_part(part, tmp_dir, new_driver, base_url), new_driver
 
 def main(input_sheet, output_root, base_url, profile=None, seq=105):
     # ─── Prepare output directories ────────────────────────────────────────────
@@ -529,37 +519,43 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
         print(f"[{i}] ➡️ Processing part={part}, TMS={tms}")
 
         try:
-            # 1) Download PDF (auto-retries on WebDriver errors)
-            pdf_path = safe_download(part, tmp_dir, driver, base_url, profile)
-            if pdf_path is None:
-                # no document for this part → record empty row & continue
+           # 1) Download PDF (auto-retries on WebDriver errors)
+            result = safe_download(part, tmp_dir, driver, base_url, profile)
+            # unpack into pdf_path and possibly updated driver
+            if isinstance(result, tuple):
+                pdf_path, driver = result
+            else:
+                pdf_path = result
+            
+            # 1a) skip if no document for this part
+            if not pdf_path:
+                print(f"    · No document found for {part}; skipping.")
+                # record a skipped row with zeros (or however you wish)
                 records.append({
-                    'ITEM_ID':        part,
-                    'ITEM_TYPE':      '',
-                    'DESCRIPTION':    '',
-                    'NET_LENGTH':     0,
-                    'NET_WIDTH':      0,
-                    'NET_HEIGHT':     THICKNESS_IN,
-                    'NET_WEIGHT':     0,
-                    'NET_VOLUME':     0,
-                    'NET_DIM_WGT':    0,
-                    'DIM_UNIT':       'in',
-                    'WGT_UNIT':       'lb',
-                    'VOL_UNIT':       'in',
-                    'FACTOR':         FACTOR,
-                    'SITE_ID':        SITE_ID,
-                    'TIME_STAMP':     ts,
-                    'OPT_INFO_2':     'N',
-                    'OPT_INFO_3':     'N',
-                    'OPT_INFO_8':     0,
-                    'IMAGE_FILE_NAME':'',
-                    'UPDATED':        'N'
+                    'ITEM_ID':          part,
+                    'ITEM_TYPE':        '',
+                    'DESCRIPTION':      '',
+                    'NET_LENGTH':       0,
+                    'NET_WIDTH':        0,
+                    'NET_HEIGHT':       THICKNESS_IN,
+                    'NET_WEIGHT':       0,
+                    'NET_VOLUME':       0,
+                    'NET_DIM_WGT':      0,
+                    'DIM_UNIT':         'in',
+                    'WGT_UNIT':         'lb',
+                    'VOL_UNIT':         'in',
+                    'FACTOR':           FACTOR,
+                    'SITE_ID':          SITE_ID,
+                    'TIME_STAMP':       ts,
+                    'OPT_INFO_2':       'N',
+                    'OPT_INFO_3':       'N',
+                    'OPT_INFO_8':       0,
+                    'IMAGE_FILE_NAME':  '',
+                    'UPDATED':          'N'
                 })
-                print(f"[{i}] ⚠️ No PDF — skipped")
                 continue
-        
+            
             print(f"    · PDF downloaded → {pdf_path}")
-            time.sleep(STEP_DELAY)
 
             # 2) Render to BGR image
             print("    · Rendering to image…")
