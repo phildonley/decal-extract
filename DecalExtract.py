@@ -22,6 +22,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import WebDriverException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 SITE_ID         = 733
@@ -523,31 +524,24 @@ def wait_for_login(driver, timeout=300):
     )
 
 def safe_download(part, tmp_dir, driver, base_url, profile):
-    """
-    Wrap download_pdf_for_part in retries on WebDriverException (locked-out).
-    On each retry: quit Chrome, wait 10s→20s→30s… then relaunch and login.
-    Returns (pdf_path, driver).
-    """
-    delays = [10, 20, 30, 40, 50]  # increase as needed
+    delays = [10, 20, 30, 40, 50]
     for delay in delays:
         try:
-            # attempt download (may raise WebDriverException if locked out)
             return download_pdf_for_part(part, tmp_dir, driver, base_url), driver
-        except WebDriverException as e:
+        except (WebDriverException, TimeoutException) as e:
             print(f"    · Locked out ({e}); closing browser and retrying in {delay}s…")
-            try:
-                driver.quit()
-            except:
-                pass
+            try: driver.quit()
+            except: pass
             time.sleep(delay)
-            # restart browser and re-login
             driver = init_driver(tmp_dir, profile_dir=profile, headless=False)
             driver.get(base_url)
-            wait_for_login(driver)
-    # final attempt (no further delay), let exception bubble if it fails again
+            # wait only 10s for the library field before next try
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.ID, 'docLibContainer_search_field'))
+            )
+    # final “no‐delay” attempt
     print("    · Final retry…")
     return download_pdf_for_part(part, tmp_dir, driver, base_url), driver
-
     
 def find_aligned_blob_group(img_color, min_area=10000, tol=10, pad=20):
     """
