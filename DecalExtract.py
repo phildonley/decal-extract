@@ -124,10 +124,13 @@ def init_driver(download_dir, profile_dir=None, headless=False):
     """Configure Chrome for headless PDF downloads into download_dir."""
     opts = Options()
     if profile_dir:
+        # point at both the user‐data dir and the Default subfolder
         opts.add_argument(f"--user-data-dir={profile_dir}")
+        opts.add_argument("--profile-directory=Default")
     prefs = {
         "download.default_directory": os.path.abspath(download_dir),
         "download.prompt_for_download": False,
+        # force external download (not in‐browser)
         "plugins.always_open_pdf_externally": True,
     }
     opts.add_experimental_option("prefs", prefs)
@@ -136,29 +139,29 @@ def init_driver(download_dir, profile_dir=None, headless=False):
     return webdriver.Chrome(options=opts)
 
 def download_pdf_for_part(part, tmp_dir, driver, base_url):
-    """
-    Search for the exact part, open its Documents modal,
-    then either fetch via requests (if onclick URL exists),
-    or click-and-poll tmp_dir for the PDF.
-    Returns the local pdf_path (string), or None if no doc exists.
-    """
     wait = WebDriverWait(driver, 20)
 
-    # 1️⃣ if no-data banner → skip this part
+    # 1) Go back & search
+    driver.get(base_url)
+    wait.until(EC.presence_of_element_located((By.ID, 'docLibContainer_search_field')))
+    clean = strip_suffix(part)
+    fld = wait.until(EC.element_to_be_clickable((By.ID, 'docLibContainer_search_field')))
+    fld.clear()
+    fld.send_keys(clean)
+    driver.find_element(By.ID, 'docLibContainer_search_button').click()
+
+    # ── 1a) bail if no data found
     if driver.find_elements(By.CSS_SELECTOR, 'div.a-IRR-noDataMsg'):
-        print(f"    · No PDF found for {part}; skipping.")
-        driver.switch_to.default_content()
         return None
 
-    # 2️⃣ if lockout lightbox → restart browser and retry
-    if driver.find_elements(By.CSS_SELECTOR, 'div.sign-in-box.ext-sign-in-box'):
-        print("    · Locked out detected; restarting browser…")
-        driver.quit()
-        time.sleep(30)   # wait before relaunch
-        driver = init_driver(tmp_dir, profile_dir=profile, headless=False)
-        driver.get(base_url)
-        wait_for_login(driver)
-        return download_pdf_for_part(part, tmp_dir, driver, base_url)
+    # 2) click Documents → iframe → download ...
+    td = wait.until(EC.presence_of_element_located((
+        By.XPATH,
+        f"//td[normalize-space(text())='{clean}']"
+    )))
+    tr = td.find_element(By.XPATH, "./ancestor::tr")
+    docs_btn = tr.find_element(By.XPATH, ".//button[contains(., 'Documents')]")
+    docs_btn.click()
     
     # continue with locating the download button…
     dl = wait.until(EC.presence_of_element_located((By.ID, "downloadBtn")))
@@ -468,14 +471,13 @@ def safe_download(part, tmp_dir, driver, base_url, profile):
     """
     Wrap download_pdf_for_part in a try/except.
     If Selenium hiccups, restart the browser once and retry.
-    Returns a tuple (pdf_path, driver).
+    Returns (pdf_path, driver).
     """
     try:
         return download_pdf_for_part(part, tmp_dir, driver, base_url), driver
     except WebDriverException:
         driver.quit()
         time.sleep(2)
-        # start a fresh browser session
         new_driver = init_driver(tmp_dir, profile_dir=profile, headless=False)
         new_driver.get(base_url)
         wait_for_login(new_driver)
@@ -524,42 +526,41 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
         print(f"[{i}] ➡️ Processing part={part}, TMS={tms}")
 
         try:
-           # 1) Download PDF (auto-retries on WebDriver errors)
+            # 1) Download PDF (auto-retries on WebDriver errors)
             result = safe_download(part, tmp_dir, driver, base_url, profile)
             # unpack into pdf_path and possibly updated driver
             if isinstance(result, tuple):
                 pdf_path, driver = result
             else:
                 pdf_path = result
-            
+
             # 1a) skip if no document for this part
             if not pdf_path:
                 print(f"    · No document found for {part}; skipping.")
-                # record a skipped row with zeros (or however you wish)
                 records.append({
-                    'ITEM_ID':          part,
-                    'ITEM_TYPE':        '',
-                    'DESCRIPTION':      '',
-                    'NET_LENGTH':       0,
-                    'NET_WIDTH':        0,
-                    'NET_HEIGHT':       THICKNESS_IN,
-                    'NET_WEIGHT':       0,
-                    'NET_VOLUME':       0,
-                    'NET_DIM_WGT':      0,
-                    'DIM_UNIT':         'in',
-                    'WGT_UNIT':         'lb',
-                    'VOL_UNIT':         'in',
-                    'FACTOR':           FACTOR,
-                    'SITE_ID':          SITE_ID,
-                    'TIME_STAMP':       ts,
-                    'OPT_INFO_2':       'N',
-                    'OPT_INFO_3':       'N',
-                    'OPT_INFO_8':       0,
-                    'IMAGE_FILE_NAME':  '',
-                    'UPDATED':          'N'
+                    'ITEM_ID':         part,
+                    'ITEM_TYPE':       '',
+                    'DESCRIPTION':     '',
+                    'NET_LENGTH':      0,
+                    'NET_WIDTH':       0,
+                    'NET_HEIGHT':      THICKNESS_IN,
+                    'NET_WEIGHT':      0,
+                    'NET_VOLUME':      0,
+                    'NET_DIM_WGT':     0,
+                    'DIM_UNIT':        'in',
+                    'WGT_UNIT':        'lb',
+                    'VOL_UNIT':        'in',
+                    'FACTOR':          FACTOR,
+                    'SITE_ID':         SITE_ID,
+                    'TIME_STAMP':      ts,
+                    'OPT_INFO_2':      'N',
+                    'OPT_INFO_3':      'N',
+                    'OPT_INFO_8':      0,
+                    'IMAGE_FILE_NAME': '',
+                    'UPDATED':         'N'
                 })
                 continue
-            
+
             print(f"    · PDF downloaded → {pdf_path}")
 
             # 2) Render to BGR image
@@ -568,7 +569,7 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
             h_img, w_img = img_color.shape[:2]
             time.sleep(STEP_DELAY)
 
-             # 3) Select the best crop box across all template‐sets
+            # 3) Select the best crop box across all template‐sets
             try:
                 print("    · Selecting best crop box…")
                 x0, y0, x1, y1 = select_best_crop_box(img_color, template_sets)
@@ -590,9 +591,9 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
             # 4) Extract region & handle legacy bands
             region = img_color[y0:y1, x0:x1]
             rh, rw = region.shape[:2]
-            if rw > rh*1.8:
+            if rw > rh * 1.8:
                 print("    · Detected legacy multi‐layer → slicing bands…")
-                third = rw//3
+                third = rw // 3
                 green = region[:, third:2*third]
                 black = region[:, 2*third:3*third]
                 def recolor_band(band, bgr):
@@ -600,13 +601,13 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
                     _, mask = cv2.threshold(g, 250, 255, cv2.THRESH_BINARY_INV)
                     fill = np.zeros_like(band)
                     fill[:] = bgr
-                    return np.where(mask[:,:,None]>0, fill, band)
+                    return np.where(mask[:, :, None] > 0, fill, band)
                 band_g = recolor_band(green, COLOR_MAP['green'])
                 band_b = recolor_band(black, COLOR_MAP['black'])
                 stacked = band_b.copy()
-                mask_g = cv2.cvtColor(band_g, cv2.COLOR_BGR2GRAY)<250
+                mask_g = cv2.cvtColor(band_g, cv2.COLOR_BGR2GRAY) < 250
                 for c in range(3):
-                    stacked[:,:,c] = np.where(mask_g, band_g[:,:,c], stacked[:,:,c])
+                    stacked[:, :, c] = np.where(mask_g, band_g[:, :, c], stacked[:, :, c])
                 crop = stacked
             else:
                 crop = region
@@ -633,33 +634,33 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
 
             # 8) Record row
             records.append({
-                'ITEM_ID':      part,
-                'ITEM_TYPE':    '',
-                'DESCRIPTION':  '',
-                'NET_LENGTH':   h_in,
-                'NET_WIDTH':    w_in,
-                'NET_HEIGHT':   THICKNESS_IN,
-                'NET_WEIGHT':   wgt,
-                'NET_VOLUME':   vol,
-                'NET_DIM_WGT':  dimw,
-                'DIM_UNIT':     'in',
-                'WGT_UNIT':     'lb',
-                'VOL_UNIT':     'in',
-                'FACTOR':       FACTOR,
-                'SITE_ID':      SITE_ID,
-                'TIME_STAMP':   ts,
-                'OPT_INFO_2':   'Y',
-                'OPT_INFO_3':   'N',
-                'OPT_INFO_8':   0,
+                'ITEM_ID':         part,
+                'ITEM_TYPE':       '',
+                'DESCRIPTION':     '',
+                'NET_LENGTH':      h_in,
+                'NET_WIDTH':       w_in,
+                'NET_HEIGHT':      THICKNESS_IN,
+                'NET_WEIGHT':      wgt,
+                'NET_VOLUME':      vol,
+                'NET_DIM_WGT':     dimw,
+                'DIM_UNIT':        'in',
+                'WGT_UNIT':        'lb',
+                'VOL_UNIT':        'in',
+                'FACTOR':          FACTOR,
+                'SITE_ID':         SITE_ID,
+                'TIME_STAMP':      ts,
+                'OPT_INFO_2':      'Y',
+                'OPT_INFO_3':      'N',
+                'OPT_INFO_8':      0,
                 'IMAGE_FILE_NAME': jpg_name,
-                'UPDATED':        'Y'
+                'UPDATED':         'Y'
             })
             print(f"[{i}] ✅ Done\n")
             time.sleep(STEP_DELAY)
 
         except Exception as e:
             print(f"[{i}] ❌ ERROR: {e}")
-            with open(os.path.join(dbg_dir,'errors.log'),'a',encoding='utf-8') as f:
+            with open(os.path.join(dbg_dir, 'errors.log'), 'a', encoding='utf-8') as f:
                 f.write(f"{raw_part}: {e}\n")
             continue
 
@@ -678,6 +679,7 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
     out_csv = os.path.join(cub_dir, f"{SITE_ID}_{ts}.csv")
     df_out.to_csv(out_csv, index=False)
     print("All done →", out_csv)
+
 
 
     # ── 6) RENDER & CROP ─────────────────────────────────────────
