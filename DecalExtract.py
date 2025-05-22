@@ -67,22 +67,22 @@ def choose_chrome_profile():
     choice = {"profile": None}
 
     def on_default():
-        choice["profile"] = os.path.expandvars(
-            r"%LOCALAPPDATA%\Google\Chrome\User Data\Default"
-        )
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            choice["profile"] = os.path.join(
+                local, "Google", "Chrome", "User Data", "Default"
+            )
+        else:
+            choice["profile"] = None
         win.destroy()
 
     def on_custom():
-        # ask string first
         p = simpledialog.askstring(
             "Custom Profile",
             "Enter full path to Chrome profile folder\n(leave blank for a new session):",
             parent=win
         )
-        if p:
-            choice["profile"] = p
-        else:
-            choice["profile"] = None
+        choice["profile"] = p or None
         win.destroy()
 
     btns = tk.Frame(win, pady=5)
