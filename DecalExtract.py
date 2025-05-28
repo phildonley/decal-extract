@@ -500,59 +500,90 @@ def match_one_corner(img_color, tpl_edges, offset, quadrant):
     ox, oy = offset
     return (x1 + maxloc[0] + ox, y1 + maxloc[1] + oy)
 
-def select_best_crop_box(img_color, template_sets, expected_ratio=None, edge=5, ar_weight=1000):
+def select_best_crop_box(img_color,
+                         template_sets,
+                         expected_ratio=None,
+                         edge=5,
+                         ar_weight=1000,
+                         edge_penalty_weight=1):
     """
     Try each template‐set to get a candidate box, then score by:
-      • penalty: how much “ink” lies on the 5px border
-      • aspect‐ratio penalty: how far each box’s AR is from expected_ratio
+      • border‐ink penalty   (how much “ink” lies on the crop border)
+      • edge‐penalty         (how many Canny edges on the border)
+      • aspect‐ratio penalty (how far the box’s AR is from expected_ratio)
+      • blob‐containment     (skip any box that cuts through the main decal blob)
     Return the (x0,y0,x1,y1) with the lowest combined score.
     """
+    import cv2
+    import numpy as np
+
     gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
-    # everything below 250 is “ink”
-    _, blob = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
-    blob = (blob > 0).astype(np.uint8)
+    H, W = gray.shape
+
+    # 1) find the main dark‐blob (the decal) and its bounding box
+    _, blob_mask = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
+    blob_mask = (blob_mask > 0).astype(np.uint8)
+    cnts, _ = cv2.findContours(blob_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if cnts:
+        c = max(cnts, key=cv2.contourArea)
+        bx, by, bw, bh = cv2.boundingRect(c)
+        blob_box = (bx, by, bx + bw, by + bh)
+    else:
+        blob_box = (0, 0, W, H)
 
     candidates = []
-    H, W = blob.shape
+
     for templates, offsets in template_sets:
+        # 2) detect the four crop‐mark corners
         try:
-            # detect the four corner brackets
             corners = detect_with_one_set(gray, templates, offsets)
-            # average into a rect
-            x0 = int((corners['top_left'][0] + corners['bottom_left'][0]) / 2)
-            y0 = int((corners['top_left'][1] + corners['top_right'][1]) / 2)
-            x1 = int((corners['top_right'][0] + corners['bottom_right'][0]) / 2)
+            x0 = int((corners['top_left'][0]    + corners['bottom_left'][0]) / 2)
+            y0 = int((corners['top_left'][1]    + corners['top_right'][1])   / 2)
+            x1 = int((corners['top_right'][0]   + corners['bottom_right'][0]) / 2)
             y1 = int((corners['bottom_left'][1] + corners['bottom_right'][1]) / 2)
         except Exception:
             continue
 
-        # clip into image bounds
-        x0n, y0n = max(0, x0), max(0, y0)
-        x1n, y1n = min(W, x1), min(H, y1)
+        # clip to image bounds
+        x0n, y0n = max(0, x0),          max(0, y0)
+        x1n, y1n = min(W, x1),          min(H, y1)
         if x1n <= x0n or y1n <= y0n:
             continue
 
-        # compute border‐ink penalty
-        top    = blob[y0n:y0n+edge, x0n:x1n]
-        bottom = blob[y1n-edge:y1n, x0n:x1n]
-        left   = blob[y0n:y1n, x0n:x0n+edge]
-        right  = blob[y0n:y1n, x1n-edge:x1n]
-        penalty = int(top.sum() + bottom.sum() + left.sum() + right.sum())
+        # 3) ensure we fully contain the decal blob
+        bx0, by0, bx1, by1 = blob_box
+        if not (x0n <= bx0 and y0n <= by0 and x1n >= bx1 and y1n >= by1):
+            continue
 
-        # aspect‐ratio penalty
+        # 4) border‐ink penalty
+        top    = blob_mask[y0n:y0n+edge, x0n:x1n]
+        bottom = blob_mask[y1n-edge:y1n, x0n:x1n]
+        left   = blob_mask[y0n:y1n, x0n:x0n+edge]
+        right  = blob_mask[y0n:y1n, x1n-edge:x1n]
+        ink_penalty = int(top.sum() + bottom.sum() + left.sum() + right.sum())
+
+        # 5) edge‐detection penalty on the *border*
+        edges = cv2.Canny(gray[y0n:y1n, x0n:x1n], 50, 150)
+        # count edge pixels along border
+        border_pixels = (
+            edges[0, :].sum() + edges[-1, :].sum() +
+            edges[:, 0].sum() + edges[:, -1].sum()
+        ) / 255
+        edge_penalty = int(border_pixels * edge_penalty_weight)
+
+        # 6) aspect‐ratio penalty
         ar = (x1n - x0n) / float(y1n - y0n)
-        if expected_ratio:
-            ar_penalty = abs(ar - expected_ratio) * ar_weight
-        else:
-            ar_penalty = 0
+        ar_penalty = abs(ar - expected_ratio) * ar_weight if expected_ratio else 0
 
-        total_score = penalty + ar_penalty
+        total_score = ink_penalty + edge_penalty + ar_penalty
         candidates.append((total_score, (x0n, y0n, x1n, y1n)))
 
     if not candidates:
         raise RuntimeError("No valid crop candidates found")
 
-    # choose the box with minimal combined score
+    # pick the candidate with minimal combined score
+
+
     _, best_box = min(candidates, key=lambda t: t[0])
     return best_box
 
