@@ -558,33 +558,21 @@ def wait_for_login(driver, timeout=300):
     )
 
 def safe_download(part, tmp_dir, driver, base_url, profile):
-    """
-    Wrap download_pdf_for_part so that only on the explicit
-    'Session locked' error do we progressively restart Chrome.
-    Returns (pdf_path, driver) or raises on other errors.
-    """
     delays = [10, 20, 30, 40, 50]
     for delay in delays:
         try:
-            pdf_path = download_pdf_for_part(part, tmp_dir, driver, base_url)
-            return pdf_path, driver
-        except WebDriverException as e:
-            if "Session locked" not in str(e):
-                # any other Selenium error should abort
-                raise
-            print(f"    · Locked out; closing browser and retrying in {delay}s…")
-            try:
-                driver.quit()
-            except:
-                pass
+            return download_pdf_for_part(part, tmp_dir, driver, base_url), driver
+        except (WebDriverException, TimeoutException) as e:
+            print(f"    · Locked out ({e}); closing browser and retrying in {delay}s…")
+            try: driver.quit()
+            except: pass
             time.sleep(delay)
             driver = init_driver(tmp_dir, profile_dir=profile, headless=False)
             driver.get(base_url)
-            # wait to confirm we're back at the library search field
-            WebDriverWait(driver, 30).until(
+            WebDriverWait(driver, 10).until(
                 EC.presence_of_element_located((By.ID, 'docLibContainer_search_field'))
             )
-    # final attempt
+    # final attempt without delay
     return download_pdf_for_part(part, tmp_dir, driver, base_url), driver
     
 def find_aligned_blob_group(img_color, min_area=10000, tol=10, pad=20):
@@ -854,64 +842,55 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
 
     # 6a) Try 4-corner bracket crop with all template sets
     try:
-        print("    · Detecting corner brackets…")
-        corners = detect_bracket_corners(img_color, templates, offsets)
-        x0, y0, x1, y1 = average_rectangle(corners)
+        print("    · Selecting best crop box…")
+        x0, y0, x1, y1 = select_best_crop_box(img_color, template_sets)
         print(f"    · Bracket crop box: {(x0, y0, x1, y1)}")
+        crop_region = img_color[y0:y1, x0:x1]
     except Exception as e:
-        print(f"    · No brackets ({e}); falling back to blob/full-page…")
+        print(f"    · Template crop failed ({e}); falling back to blob/full-page…")
         gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
         _, thresh = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
         cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if cnts:
-            c = max(cnts, key=cv2.contourArea)
-            bx, by, bw, bh = cv2.boundingRect(c)
-            x0, y0, x1, y1 = bx, by, bx + bw, by + bh
-            print(f"    · Blob crop box: {(x0, y0, x1, y1)}")
+            bx, by, bw, bh = cv2.boundingRect(max(cnts, key=cv2.contourArea))
+            print(f"    · Blob crop box: {(bx, by, bx+bw, by+bh)}")
+            crop_region = img_color[by:by+bh, bx:bx+bw]
         else:
-            margin = int(0.01 * min(h_img, w_img))
-            x0, y0, x1, y1 = margin, margin, w_img - margin, h_img - margin
-            print(f"    · Full-page margin box: {(x0, y0, x1, y1)}")
+            m = int(0.01 * min(h_img, w_img))
+            print(f"    · Full-page margin crop: {(m, m, w_img-m, h_img-m)}")
+            crop_region = img_color[m:h_img-m, m:w_img-m]
 
     # 6c) Extract that region
     region = img_color[y0:y1, x0:x1]
-    rh, rw = region.shape[:2]
+    rh, rw = crop_region.shape[:2]
 
     # 6d) Legacy multi-layer? 3 bands side-by-side
     if rw > rh * 1.8:
-        print("    · Detected legacy multi-layer → slicing into thirds…")
+        print("    · Detected legacy multi-layer → slicing bands…")
         third = rw // 3
-        green_band = region[:, third:2*third]
-        black_band = region[:, 2*third:3*third]
-
-        def recolor_band(band, color_bgr):
+        green = crop_region[:, third:2*third]
+        black = crop_region[:, 2*third:3*third]
+        def recolor(band, bgr):
             g = cv2.cvtColor(band, cv2.COLOR_BGR2GRAY)
             _, mask = cv2.threshold(g, 250, 255, cv2.THRESH_BINARY_INV)
-            fill = np.zeros_like(band)
-            fill[:] = color_bgr
-            return np.where(mask[:, :, None] > 0, fill, band)
-
-        # recolor each band
-        band_g = recolor_band(green_band, COLOR_MAP['green'])
-        band_b = recolor_band(black_band, COLOR_MAP['black'])
-
-        # overlay green atop black
+            fill = np.zeros_like(band); fill[:] = bgr
+            return np.where(mask[:,:,None]>0, fill, band)
+        band_g = recolor(green, COLOR_MAP['green'])
+        band_b = recolor(black, COLOR_MAP['black'])
         stacked = band_b.copy()
         mask_g = cv2.cvtColor(band_g, cv2.COLOR_BGR2GRAY) < 250
-        for ch in range(3):
-            stacked[:, :, ch] = np.where(mask_g, band_g[:, :, ch], stacked[:, :, ch])
-
+        for c in range(3):
+            stacked[:,:,c] = np.where(mask_g, band_g[:,:,c], stacked[:,:,c])
         crop = stacked
-
     else:
-        # single-image crop
-        crop = region
+        crop = crop_region
 
     # ── 7) Save JPEG ─────────────────────────────────────────
     jpg_name = f"{tms}.{part}.{seq}.jpg"
     out_jpg  = os.path.join(imgs_dir, jpg_name)
-    print(f"    · Saving JPEG → {out_jpg}")
+    print(f"    · Writing JPEG → {out_jpg}")
     cv2.imwrite(out_jpg, crop)
+    time.sleep(STEP_DELAY)
 
     # ── 8) Compute dims, volume, weight ────────────────────
     h_in, w_in = parse_dimensions_from_pdf(pdf_path)
