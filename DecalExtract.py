@@ -102,15 +102,14 @@ def choose_chrome_profile():
     root.destroy()
     return choice['profile']
         
-def strip_suffix(part: str) -> str:
+def strip_gt_suffix(part: str) -> str:
     """
-    Remove the last two characters only if they are 'GT' (case‐insensitive).
-    E.g. "1293217GT" -> "1293217", but "65417DU" -> "65417DU"
+    Remove a trailing “GT” from the part number, if present,
+    but leave any other letters (e.g. DU, FR, etc.) untouched.
     """
-    p = part.strip()
-    if p.upper().endswith('GT'):
-        return p[:-2]
-    return p
+    if part.endswith("GT"):
+        return part[:-2]
+    return part
 
 def clear_filters(driver, timeout=10):
     """Click any existing remove-filter buttons, wait for them to disappear."""
