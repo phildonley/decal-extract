@@ -606,52 +606,36 @@ def wait_for_login(driver, timeout=300):
 
 def safe_download(part, tmp_dir, driver, base_url, profile):
     """
-    Keep retrying download_pdf_for_part until we either:
-      – get a PDF path (success),
-      – get None (no document found),
-      – or you manually log back in past the lock-out lightbox.
-    On “Session locked” we fully quit, wait, re-open (non-headless),
-    block in wait_for_login(), then retry.
+    Attempt to download the PDF for `part`, retrying on lockout by
+    fully restarting the browser with increasing delays.
+    Returns a tuple (pdf_path, driver).
     """
-    delays = [10, 20, 30, 40, 50]  # seconds
-
-    for delay in delays + [None]:
+    delays = [10, 20, 30, 40, 50]
+    for delay in delays:
         try:
-            pdf_path = download_pdf_for_part(part, tmp_dir, driver, base_url)
-            # either a real path or None (skip); in both cases we’re done
-            return pdf_path, driver
-
-        except WebDriverException as e:
-            msg = str(e).lower()
-            # only treat our lock-out signal as retryable
-            if "sign-in-box" not in msg and "session locked" not in msg:
-                raise
-
-            # if we ran out of fixed delays, keep using the last one
-            wait_time = delay or delays[-1]
-            print(f"   · Locked out ({e}); closing browser and retrying in {wait_time}s…")
-
+            # Try the normal download path; will raise if locked out
+            return download_pdf_for_part(part, tmp_dir, driver, base_url), driver
+        except (WebDriverException, TimeoutException) as e:
+            print(f"    · Locked out ({e}); closing browser and retrying in {delay}s…")
+            # Kill the hanging session
             try:
                 driver.quit()
             except:
                 pass
-            time.sleep(wait_time)
-
-            # reopen Chrome (non-headless so you can log back in)
+            time.sleep(delay)
+            # Start fresh
             driver = init_driver(tmp_dir, profile_dir=profile, headless=False)
             driver.get(base_url)
-
-            print("   · Waiting for you to re-login in the reopened browser…")
+            print("    · Waiting for library page to become available…")
+            # Block until the search field shows up again (or timeout)
             try:
-                wait_for_login(driver, timeout=300)
+                wait_for_login(driver, timeout=60)
             except TimeoutException:
-                print("   · Still locked out after waiting; will retry again…")
+                print(f"    · Still locked out after {delay}s; will retry.")
                 continue
 
-            print(f"   · Login detected; retrying download for part {part} now")
-
-    # unreachable, but satisfy the signature
-    raise RuntimeError("safe_download exited retry loop unexpectedly")
+    # Final attempt (no further delays)
+    return download_pdf_for_part(part, tmp_dir, driver, base_url), driver
     
 def find_aligned_blob_group(img_color, min_area=10000, tol=10, pad=20):
     """
