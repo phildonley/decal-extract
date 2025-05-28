@@ -967,7 +967,7 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
         'OPT_INFO_6':      '',
         'OPT_INFO_7':      '',
         'OPT_INFO_8':      0,
-        'IMAGE_FILE_NAME': jpg_name,
+        'IMAGE_FILE_NAME': '',
         'UPDATED':         'Y'
     })
     print(f"[{i}] ✅ Done\n")
