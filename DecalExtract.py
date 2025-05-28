@@ -104,12 +104,13 @@ def choose_chrome_profile():
         
 def strip_suffix(part: str) -> str:
     """
-    Remove the last two characters only if they are both letters.
-    E.g. "1293217GT" -> "1293217", but "65417" -> "65417"
+    Remove the last two characters only if they are 'GT' (case‐insensitive).
+    E.g. "1293217GT" -> "1293217", but "65417DU" -> "65417DU"
     """
-    if len(part) > 2 and part[-2:].isalpha():
-        return part[:-2]
-    return part
+    p = part.strip()
+    if p.upper().endswith('GT'):
+        return p[:-2]
+    return p
 
 def clear_filters(driver, timeout=10):
     """Click any existing remove-filter buttons, wait for them to disappear."""
@@ -385,12 +386,44 @@ def recolor_layer(image, color_bgr):
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2BGRA)
 
 def parse_dimensions_from_pdf(pdf_path):
-    pat = r"Dimensions\s*\(h\s*x\s*w\)\s*:\s*([\d.]+)\s*[xX]\s*([\d.]+)"
+    """
+    Scan the first page of pdf for:
+      1) “Dimensions (h x w): 1.25" x 5.75"”
+      2) “OVER ALL LENGTH IS 14 INCHES”
+      3) any “#″ x #″” pattern
+    Returns (height_in, width_in) as floats, or (0.0, 0.0).
+    """
+    import re
+    import pdfplumber
+
+    text = ""
     with pdfplumber.open(pdf_path) as pdf:
-        txt = pdf.pages[0].extract_text() or ""
-    m = re.search(pat, txt)
+        page = pdf.pages[0]
+        text = page.extract_text() or ""
+
+    # 1) Explicit (h x w) line
+    m = re.search(
+        r'Dimensions\s*\(h\s*[x×]\s*w\)\s*:\s*([\d.]+)\s*["”]?\s*[x×]\s*([\d.]+)\s*["”]?',
+        text, re.IGNORECASE
+    )
     if m:
         return float(m.group(1)), float(m.group(2))
+
+    # 2) “OVER ALL LENGTH IS 14 INCHES”
+    m2 = re.search(
+        r'OVER\s*ALL\s*LENGTH\s*(?:IS|=)\s*([\d.]+)\s*INCH',
+        text, re.IGNORECASE
+    )
+    if m2:
+        length = float(m2.group(1))
+        # width unknown → leave as 0.0 (or derive from aspect ratio if you like)
+        return length, 0.0
+
+    # 3) Any free “#″ x #″” fallback
+    m3 = re.search(r'([\d.]+)\s*["”]\s*[x×]\s*([\d.]+)\s*["”]?', text)
+    if m3:
+        return float(m3.group(1)), float(m3.group(2))
+
     return 0.0, 0.0
     
 def extract_color_label(pdf_path: str,
@@ -626,14 +659,15 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
 
     # ─── Loop over each row ────────────────────────────────────────────────────
     for i, row in df.iterrows():
-        raw_part, tms = row['PART'], row['TMS']
-        part = strip_suffix(raw_part)
-        print(f"[{i}] ➡️ Processing part={part}, TMS={tms}")
+        original_part = row['PART'].strip()
+        tms           = row['TMS']
+        search_part   = strip_suffix(original_part)
+    
+        print(f"[{i}] ➡️ Processing part={search_part} (orig={original_part}), TMS={tms}")
 
         try:
             # 1) Download PDF (auto-retries on WebDriver errors)
-            result = safe_download(part, tmp_dir, driver, base_url, profile)
-            # unpack into pdf_path and possibly updated driver
+            result = safe_download(search_part, tmp_dir, driver, base_url, profile)
             if isinstance(result, tuple):
                 pdf_path, driver = result
             else:
@@ -668,10 +702,27 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
 
             print(f"    · PDF downloaded → {pdf_path}")
 
-            # 2) Render to image
-            print("    · Rendering to image…")
+            # ─── 2a) Render first page to BGR image & build ink mask ──────────────────
             img = render_pdf_color_page(pdf_path, dpi=DPI)
             h_img, w_img = img.shape[:2]
+            # build a binary mask of “ink” pixels
+            gray     = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            _, blob  = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
+            # find first row with any ink
+            ys = np.where(blob.sum(axis=1) > 0)[0]
+            y0_art = int(ys.min()) if ys.size else 0
+            # optional pad above artwork
+            PAD_TOP = 5
+            y0_art = max(0, y0_art - PAD_TOP)
+            
+            # ─── 2b) Now choose your crop in X and Y as before,
+            # but clamp the top at y0_art:
+            # e.g. for bracket-template:
+            print("    · Bracket-template crop…")
+            x0, y0_old, x1, y1 = select_best_crop_box(img, template_sets)
+            # enforce no header above artwork
+            y0 = max(y0_old, y0_art)
+            crop_img = img[y0:y1, x0:x1]
             time.sleep(STEP_DELAY)
     
             # 3) Parse dimensions right away
@@ -732,11 +783,10 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
                                    max(0,bx-pad):min(bx2+pad,w_img)]
     
             # 5) Save JPEG
-            jpg_name = f"{tms}.{part}.{seq}.jpg"
+            jpg_name = f"{tms}.{original_part}.{seq}.jpg"
             out_jpg  = os.path.join(imgs_dir, jpg_name)
             print(f"    · Writing JPEG → {out_jpg}")
             cv2.imwrite(out_jpg, crop_img)
-            time.sleep(STEP_DELAY)
     
             # 6) Clean up PDF
             print("    · Removing temp PDF")
@@ -749,7 +799,7 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
             dimw = vol / FACTOR
     
             records.append({
-                'ITEM_ID':         part,
+                'ITEM_ID':         original_part,
                 'ITEM_TYPE':       '',
                 'DESCRIPTION':     '',
                 'NET_LENGTH':      h_in,
@@ -767,7 +817,7 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
                 'OPT_INFO_2':      'Y',
                 'OPT_INFO_3':      'N',
                 'OPT_INFO_8':      0,
-                'IMAGE_FILE_NAME': jpg_name,
+                'IMAGE_FILE_NAME': '',
                 'UPDATED':         'Y'
             })
             print(f"[{i}] ✅ Done\n")
