@@ -501,11 +501,12 @@ def match_one_corner(img_color, tpl_edges, offset, quadrant):
     ox, oy = offset
     return (x1 + maxloc[0] + ox, y1 + maxloc[1] + oy)
 
-def select_best_crop_box(img_color, template_sets, edge=5):
+def select_best_crop_box(img_color, template_sets, expected_ratio=None, edge=5, ar_weight=1000):
     """
-    Try each template‐set to get a candidate box, then score by
-    how many non‐white pixels lie on the crop boundary.
-    Return the (x0,y0,x1,y1) with the lowest edge‐penalty.
+    Try each template‐set to get a candidate box, then score by:
+      • penalty: how much “ink” lies on the 5px border
+      • aspect‐ratio penalty: how far each box’s AR is from expected_ratio
+    Return the (x0,y0,x1,y1) with the lowest combined score.
     """
     gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
     # everything below 250 is “ink”
@@ -513,39 +514,47 @@ def select_best_crop_box(img_color, template_sets, edge=5):
     blob = (blob > 0).astype(np.uint8)
 
     candidates = []
+    H, W = blob.shape
     for templates, offsets in template_sets:
         try:
-            # run your 4‐corner match for this set
+            # detect the four corner brackets
             corners = detect_with_one_set(gray, templates, offsets)
-            x0, y0, x1, y1 = average_rectangle({
-                'top-left':    corners['top_left'],
-                'top-right':   corners['top_right'],
-                'bottom-left': corners['bottom_left'],
-                'bottom-right':corners['bottom_right'],
-            })
+            # average into a rect
+            x0 = int((corners['top_left'][0] + corners['bottom_left'][0]) / 2)
+            y0 = int((corners['top_left'][1] + corners['top_right'][1]) / 2)
+            x1 = int((corners['top_right'][0] + corners['bottom_right'][0]) / 2)
+            y1 = int((corners['bottom_left'][1] + corners['bottom_right'][1]) / 2)
         except Exception:
             continue
 
-        # clip into image
-        x0, y0 = max(0, x0), max(0, y0)
-        x1, y1 = min(blob.shape[1], x1), min(blob.shape[0], y1)
-        if x1 <= x0 or y1 <= y0:
+        # clip into image bounds
+        x0n, y0n = max(0, x0), max(0, y0)
+        x1n, y1n = min(W, x1), min(H, y1)
+        if x1n <= x0n or y1n <= y0n:
             continue
 
-        # build 4 edge masks
-        top    = blob[y0:y0+edge, x0:x1]
-        bottom = blob[y1-edge:y1, x0:x1]
-        left   = blob[y0:y1, x0:x0+edge]
-        right  = blob[y0:y1, x1-edge:x1]
+        # compute border‐ink penalty
+        top    = blob[y0n:y0n+edge, x0n:x1n]
+        bottom = blob[y1n-edge:y1n, x0n:x1n]
+        left   = blob[y0n:y1n, x0n:x0n+edge]
+        right  = blob[y0n:y1n, x1n-edge:x1n]
         penalty = int(top.sum() + bottom.sum() + left.sum() + right.sum())
 
-        candidates.append((penalty, (x0, y0, x1, y1)))
+        # aspect‐ratio penalty
+        ar = (x1n - x0n) / float(y1n - y0n)
+        if expected_ratio:
+            ar_penalty = abs(ar - expected_ratio) * ar_weight
+        else:
+            ar_penalty = 0
+
+        total_score = penalty + ar_penalty
+        candidates.append((total_score, (x0n, y0n, x1n, y1n)))
 
     if not candidates:
         raise RuntimeError("No valid crop candidates found")
 
-    best_penalty, best_box = min(candidates, key=lambda t: t[0])
-    print(f"    · Chosen crop box {best_box} with penalty {best_penalty}")
+    # choose the box with minimal combined score
+    _, best_box = min(candidates, key=lambda t: t[0])
     return best_box
 
 def wait_for_login(driver, timeout=300):
@@ -713,10 +722,43 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
             crop_img = img[y0:y1, x0:x1]
             time.sleep(STEP_DELAY)
     
-            # 3) Parse dimensions right away
+            # 3) Try bracket‐template crop (guided by the PDF’s stated dims)
+            print("    · Bracket-template crop…")
+            # parse the PDF for its H×W dims (inches)
             h_in, w_in = parse_dimensions_from_pdf(pdf_path)
-            print(f"    · Parsed dims: {h_in}\" x {w_in}\"")
-            time.sleep(STEP_DELAY)
+            expected_ar = (w_in / h_in) if (h_in and w_in) else None
+        
+            try:
+                # pass expected_ar into the selector (None if dims absent)
+                x0, y0, x1, y1 = select_best_crop_box(
+                    img,
+                    template_sets,
+                    expected_ratio=expected_ar
+                )
+                print(f"    · Bracket crop box: {(x0, y0, x1, y1)}")
+                crop_img = img[y0:y1, x0:x1]
+        
+            except RuntimeError as e:
+                # fallback if no good bracket candidates
+                print(f"    · No valid bracket candidates ({e}); falling back…")
+                # your existing blob or full‐logo fallback here, e.g.:
+                grp = find_aligned_blob_group(img, min_area=5000, tol=10, pad=20)
+                if grp:
+                    x0, y0, x1, y1 = grp
+                    print(f"    · Aligned blob group crop: {(x0, y0, x1, y1)}")
+                    crop_img = img[y0:y1, x0:x1]
+                else:
+                    # your full‐logo or blob fallback
+                    y_crop = crop_full_logo(pdf_path, dpi=DPI)
+                    if y_crop:
+                        print(f"    · Full-logo crop at y={y_crop}px")
+                        crop_img = img[:y_crop, :]
+                    else:
+                        # last‐ditch: everything
+                        h_img, w_img = img.shape[:2]
+                        margin = int(0.01 * min(h_img, w_img))
+                        print("    · Full-page margin crop")
+                        crop_img = img[margin:h_img-margin, margin:w_img-margin]
     
             # 4) Decide which crop method to use
             pad = 20  # padding for blob-based crops
