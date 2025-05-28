@@ -830,22 +830,18 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
             if crop_img is None:
                 try:
                     print("    · Bracket-template crop…")
-                        # d) single best bracket crop
-    if crop_img is None:
-        try:
-            print("    · Bracket-template crop…")
-            # bias the template matcher toward the PDF’s H×W ratio
-            x0,y0,x1,y1 = select_best_crop_box(img, template_sets, expected_ratio=expected_ar)
-            print(f"    · Bracket crop box: {(x0,y0,x1,y1)}")
-            crop_img = img[y0:y1, x0:x1]
-        except RuntimeError:
-                    # e) fallback to single blob bbox + margin
-                    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                    blob = crop_blob_bbox(gray) or (0,0,w_img,h_img)
-                    bx,by,bx2,by2 = blob
-                    print(f"    · Blob-fallback crop: {blob}")
-                    crop_img = img[max(0,by-pad):min(by2+pad,h_img),
-                                   max(0,bx-pad):min(bx2+pad,w_img)]
+                    # bias the template matcher toward the PDF’s H×W ratio
+                    x0,y0,x1,y1 = select_best_crop_box(img, template_sets, expected_ratio=expected_ar)
+                    print(f"    · Bracket crop box: {(x0,y0,x1,y1)}")
+                    crop_img = img[y0:y1, x0:x1]
+                except RuntimeError:
+                            # e) fallback to single blob bbox + margin
+                            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                            blob = crop_blob_bbox(gray) or (0,0,w_img,h_img)
+                            bx,by,bx2,by2 = blob
+                            print(f"    · Blob-fallback crop: {blob}")
+                            crop_img = img[max(0,by-pad):min(by2+pad,h_img),
+                                           max(0,bx-pad):min(bx2+pad,w_img)]
     
             # 5) Save JPEG
             jpg_name = f"{tms}.{original_part}.{seq}.jpg"
