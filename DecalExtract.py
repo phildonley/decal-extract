@@ -151,7 +151,7 @@ def download_pdf_for_part(part, tmp_dir, driver, base_url):
     # 1) Search for the part
     driver.get(base_url)
     wait.until(EC.presence_of_element_located((By.ID, 'docLibContainer_search_field')))
-    clean = strip_suffix(part)
+    clean = strip_gt_suffix(part)
     fld = wait.until(EC.element_to_be_clickable((By.ID, 'docLibContainer_search_field')))
     fld.clear()
     fld.send_keys(clean)
@@ -657,7 +657,7 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
     for i, row in df.iterrows():
         original_part = row['PART'].strip()
         tms           = row['TMS']
-        search_part   = strip_suffix(original_part)
+        search_part   = strip_gt_suffix(original_part)
     
         print(f"[{i}] ➡️ Processing part={search_part} (orig={original_part}), TMS={tms}")
 
