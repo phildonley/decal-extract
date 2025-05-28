@@ -143,31 +143,40 @@ def download_pdf_for_part(part, tmp_dir, driver, base_url):
     """
     Search for part in the library.
     - If “No data found” appears, return None.
-    - If the sign-in lightbox appears, raise to trigger safe_download retry.
+    - If the sign-in (lockout) page appears, raise to trigger safe_download retry.
     - Otherwise download the PDF (inline URL or click+poll).
     """
     wait = WebDriverWait(driver, 20)
 
-    # 1) Search for the part
+    # 1) Navigate to the library home
     driver.get(base_url)
+
+    # — immediately check for the AAD lock-out page by its title —
+    time.sleep(1)   # give it a moment to render
+    if "Sign in to your account" in driver.title:
+        # we know we’re on the MS login page, not the library → force a full retry
+        raise WebDriverException("Session locked, need to re-login")
+
+    # 2) Wait for the IRR search field
     wait.until(EC.presence_of_element_located((By.ID, 'docLibContainer_search_field')))
+
+    # 3) Perform your normal search & download logic…
     clean = strip_gt_suffix(part)
     fld = wait.until(EC.element_to_be_clickable((By.ID, 'docLibContainer_search_field')))
     fld.clear()
     fld.send_keys(clean)
     driver.find_element(By.ID, 'docLibContainer_search_button').click()
 
-    # 1a) bail if “No data found”
+    # 3a) bail if “No data found”
     time.sleep(1)
     if driver.find_elements(By.CSS_SELECTOR, 'div.a-IRR-noDataMsg'):
         return None
 
-    # 1b) detect locked‐out sign‐in lightbox
+    # 3b) detect the lock-out lightbox again (just in case)
     if driver.find_elements(By.CSS_SELECTOR, 'div.sign-in-box.ext-sign-in-box'):
-        # only this exact condition triggers a restart
         raise WebDriverException("Session locked, need to re-login")
 
-    # 2) Click the row’s Documents button
+    # 4) Click the row’s Documents button, switch into its iframe, etc…
     td = wait.until(EC.presence_of_element_located((
         By.XPATH,
         f"//td[normalize-space(text())='{clean}']"
@@ -176,12 +185,11 @@ def download_pdf_for_part(part, tmp_dir, driver, base_url):
     docs_btn = tr.find_element(By.XPATH, ".//button[contains(., 'Documents')]")
     docs_btn.click()
 
-    # 3) Switch into the Documents iframe
     wait.until(EC.frame_to_be_available_and_switch_to_it(
         (By.CSS_SELECTOR, "iframe[title='Documents']")
     ))
 
-    # 4) Try inline URL download
+    # 5) Try inline URL download…
     dl = wait.until(EC.presence_of_element_located((By.ID, "downloadBtn")))
     onclick = dl.get_attribute("onclick") or ""
     m = re.search(r"doDownload\('([^']+)','([^']+)'\)", onclick)
@@ -197,7 +205,7 @@ def download_pdf_for_part(part, tmp_dir, driver, base_url):
         driver.switch_to.default_content()
         return out_path
 
-    # 5) Fallback: click + poll for the PDF file
+    # 6) Fallback: click + poll for the PDF file
     dl.click()
     driver.switch_to.default_content()
     return wait_for_pdf(tmp_dir, clean, timeout=DOWNLOAD_TIMEOUT)
