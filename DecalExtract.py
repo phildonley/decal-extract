@@ -707,10 +707,34 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
     # ─── Launch browser & load library ─────────────────────────────────────────
     driver = init_driver(tmp_dir, profile_dir=profile)
     print("· Browser launched")
-    driver.get(base_url)
+
     wait = WebDriverWait(driver, 20)
-    wait.until(EC.presence_of_element_located((By.ID, 'docLibContainer_search_field')))
-    print("· Library page ready")
+    delays = [10, 20, 30]  # seconds to wait before each retry
+
+    for delay in delays:
+        driver.get(base_url)
+        time.sleep(1)  # let the page start rendering
+
+        # 1) immediate lock-out check by page title
+        if "Sign in to your account" in driver.title:
+            print(f"· Locked out at startup; closing browser and retrying in {delay}s…")
+            driver.quit()
+            time.sleep(delay)
+            driver = init_driver(tmp_dir, profile_dir=profile)
+            continue
+
+        # 2) try waiting for the library search field
+        try:
+            wait.until(EC.presence_of_element_located((By.ID, 'docLibContainer_search_field')))
+            print("· Library page ready")
+            break
+        except TimeoutException:
+            print(f"· Timeout waiting for library; closing browser and retrying in {delay}s…")
+            driver.quit()
+            time.sleep(delay)
+            driver = init_driver(tmp_dir, profile_dir=profile)
+    else:
+        raise RuntimeError("❌ Could not reach Document Library after multiple retries")
 
     # ─── Load templates once ───────────────────────────────────────────────────
     template_sets = load_template_sets('templates')
