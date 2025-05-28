@@ -597,22 +597,48 @@ def wait_for_login(driver, timeout=300):
     )
 
 def safe_download(part, tmp_dir, driver, base_url, profile):
-    delays = [10, 20, 30, 40, 50]
-    for delay in delays:
+    """
+    Attempt to download the PDF, retrying on lockouts.
+    If we hit a sign-in lightbox, restart Chrome and prompt for manual re-login,
+    blocking until the library search field reappears.
+    """
+    from selenium.common.exceptions import WebDriverException, TimeoutException
+
+    while True:
         try:
+            # normal download attempt
             return download_pdf_for_part(part, tmp_dir, driver, base_url), driver
-        except (WebDriverException, TimeoutException) as e:
-            print(f"    · Locked out ({e}); closing browser and retrying in {delay}s…")
-            try: driver.quit()
-            except: pass
-            time.sleep(delay)
-            driver = init_driver(tmp_dir, profile_dir=profile, headless=False)
-            driver.get(base_url)
-            WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.ID, 'docLibContainer_search_field'))
-            )
-    # final attempt without delay
-    return download_pdf_for_part(part, tmp_dir, driver, base_url), driver
+
+        except WebDriverException as e:
+            text = str(e).lower()
+            # catch our “locked-out” condition
+            if "sign-in-box" in text or "session locked" in text:
+                print(f"   · Locked out ({e}); restarting browser…")
+                try:
+                    driver.quit()
+                except:
+                    pass
+
+                # restart
+                time.sleep(2)
+                driver = init_driver(tmp_dir, profile_dir=profile, headless=False)
+                driver.get(base_url)
+
+                # crucial: wait for you to re-login
+                print("   · Please log back into the library, then press ENTER to continue…")
+                input()
+                wait_for_login(driver, timeout=600)
+                print("   · Re-login detected — resuming download…")
+                continue
+
+            # any other WebDriver error: re-raise
+            raise
+
+        except TimeoutException:
+            # PDF didn’t show up in time – wait a bit and retry
+            print(f"   · PDF fetch timed out for part={part}; retrying in 5s…")
+            time.sleep(5)
+            continue
     
 def find_aligned_blob_group(img_color, min_area=10000, tol=10, pad=20):
     """
