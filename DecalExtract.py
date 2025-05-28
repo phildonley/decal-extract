@@ -799,10 +799,15 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
             if crop_img is None:
                 try:
                     print("    · Bracket-template crop…")
-                    x0,y0,x1,y1 = select_best_crop_box(img, template_sets)
-                    print(f"    · Bracket crop box: {(x0,y0,x1,y1)}")
-                    crop_img = img[y0:y1, x0:x1]
-                except RuntimeError:
+                        # d) single best bracket crop
+    if crop_img is None:
+        try:
+            print("    · Bracket-template crop…")
+            # bias the template matcher toward the PDF’s H×W ratio
+            x0,y0,x1,y1 = select_best_crop_box(img, template_sets, expected_ratio=expected_ar)
+            print(f"    · Bracket crop box: {(x0,y0,x1,y1)}")
+            crop_img = img[y0:y1, x0:x1]
+        except RuntimeError:
                     # e) fallback to single blob bbox + margin
                     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
                     blob = crop_blob_bbox(gray) or (0,0,w_img,h_img)
