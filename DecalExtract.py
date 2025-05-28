@@ -675,9 +675,9 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
 
             # 1a) skip if no document for this part
             if not pdf_path:
-                print(f"    · No document found for {part}; skipping.")
+                print(f"    · No document found for {original_part}; skipping.")
                 records.append({
-                    'ITEM_ID':         part,
+                    'ITEM_ID':         original_part,
                     'ITEM_TYPE':       '',
                     'DESCRIPTION':     '',
                     'NET_LENGTH':      0,
@@ -826,7 +826,7 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
         except Exception as e:
             print(f"[{i}] ❌ ERROR: {e}")
             with open(os.path.join(dbg_dir, 'errors.log'), 'a', encoding='utf-8') as f:
-                f.write(f"{raw_part}: {e}\n")
+                f.write(f"{original_part}: {e}\n")
             continue
 
     # ─── Tear down & write CSV ───────────────────────────────────────────────────
