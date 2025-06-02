@@ -240,7 +240,7 @@ def load_template_sets(root='templates'):
         tpl_dict, off_dict = {}, {}
         for quad in quad_names:
             # try jpg, jpeg, png in that order
-            for ext in ('jpg','jpeg','png'):
+            for ext in ('png','jpg','jpeg'):
                 path = os.path.join(folder, f"{quad}.{ext}")
                 if os.path.exists(path):
                     img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
