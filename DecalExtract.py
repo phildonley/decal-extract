@@ -122,7 +122,9 @@ def clear_filters(driver, timeout=10):
     )
 
 def init_driver(download_dir, profile_dir=None, headless=False):
-    """Configure Chrome for headless PDF downloads into download_dir."""
+    """
+    Configure Chrome for headless PDF downloads into download_dir.
+    """
     opts = Options()
     if profile_dir:
         # point at both the user‐data dir and the Default subfolder
@@ -401,8 +403,8 @@ def parse_dimensions_from_pdf(pdf_path):
     Scan the first page of pdf for:
       1) “Dimensions (h x w): 1.25" x 5.75"”
       2) “OVER ALL LENGTH IS 14 INCHES”
-      3) any “#″ x #″” pattern
-    Returns (height_in, width_in) as floats, or (0.0, 0.0).
+      3) any free “#″ x #″” pattern as a fallback
+    Returns (height_in, width_in). If only “OVER ALL LENGTH” found, returns (length_in, 0.0).
     """
     import re
     import pdfplumber
@@ -412,7 +414,7 @@ def parse_dimensions_from_pdf(pdf_path):
         page = pdf.pages[0]
         text = page.extract_text() or ""
 
-    # 1) Explicit (h x w) line
+    # 1) Explicit H×W
     m = re.search(
         r'Dimensions\s*\(h\s*[x×]\s*w\)\s*:\s*([\d.]+)\s*["”]?\s*[x×]\s*([\d.]+)\s*["”]?',
         text, re.IGNORECASE
@@ -420,17 +422,17 @@ def parse_dimensions_from_pdf(pdf_path):
     if m:
         return float(m.group(1)), float(m.group(2))
 
-    # 2) “OVER ALL LENGTH IS 14 INCHES”
+    # 2) “OVER ALL LENGTH IS 14 INCHES” (or variations)
     m2 = re.search(
         r'OVER\s*ALL\s*LENGTH\s*(?:IS|=)\s*([\d.]+)\s*INCH',
         text, re.IGNORECASE
     )
     if m2:
         length = float(m2.group(1))
-        # width unknown → leave as 0.0 (or derive from aspect ratio if you like)
+        # width unknown → return (length, 0.0), caller must derive ratio via blob if needed
         return length, 0.0
 
-    # 3) Any free “#″ x #″” fallback
+    # 3) Fallback “#″ x #″” anywhere
     m3 = re.search(r'([\d.]+)\s*["”]\s*[x×]\s*([\d.]+)\s*["”]?', text)
     if m3:
         return float(m3.group(1)), float(m3.group(2))
@@ -512,90 +514,72 @@ def match_one_corner(img_color, tpl_edges, offset, quadrant):
     ox, oy = offset
     return (x1 + maxloc[0] + ox, y1 + maxloc[1] + oy)
 
-def select_best_crop_box(img_color,
-                         template_sets,
-                         expected_ratio=None,
-                         edge=5,
-                         ar_weight=1000,
-                         edge_penalty_weight=1):
+def select_best_crop_box(img_color, template_sets, expected_ratio=None, edge=5, ar_weight=1000):
     """
     Try each template‐set to get a candidate box, then score by:
-      • border‐ink penalty   (how much “ink” lies on the crop border)
-      • edge‐penalty         (how many Canny edges on the border)
-      • aspect‐ratio penalty (how far the box’s AR is from expected_ratio)
-      • blob‐containment     (skip any box that cuts through the main decal blob)
-    Return the (x0,y0,x1,y1) with the lowest combined score.
+      • penalty: how much “ink” lies on the edge=border
+      • aspect‐ratio penalty: how far each candidate’s AR is from expected_ratio
+    If expected_ratio is None but h_in > 0, w_in==0.0 (length‐only case),
+    we derive expected_ratio from the largest blob itself.
+    Returns the (x0,y0,x1,y1) with the lowest combined score or raises RuntimeError if none found.
     """
-    import cv2
-    import numpy as np
-
     gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
-    H, W = gray.shape
-
-    # 1) find the main dark‐blob (the decal) and its bounding box
+    # everything below 250 is “ink”
     _, blob_mask = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
     blob_mask = (blob_mask > 0).astype(np.uint8)
-    cnts, _ = cv2.findContours(blob_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if cnts:
-        c = max(cnts, key=cv2.contourArea)
-        bx, by, bw, bh = cv2.boundingRect(c)
-        blob_box = (bx, by, bx + bw, by + bh)
-    else:
-        blob_box = (0, 0, W, H)
+
+    H, W = blob_mask.shape
+
+    # If caller provided expected_ratio==0.0, let’s derive it from the largest blob
+    if expected_ratio == 0.0:
+        bbox = crop_blob_bbox(gray) or (0, 0, W, H)
+        x0b, y0b, x1b, y1b = bbox
+        blob_w = x1b - x0b
+        blob_h = y1b - y0b
+        if blob_h > 0:
+            expected_ratio = blob_w / float(blob_h)
+        else:
+            expected_ratio = None
 
     candidates = []
-
     for templates, offsets in template_sets:
-        # 2) detect the four crop‐mark corners
         try:
+            # detect the four corner brackets
             corners = detect_with_one_set(gray, templates, offsets)
-            x0 = int((corners['top_left'][0]    + corners['bottom_left'][0]) / 2)
-            y0 = int((corners['top_left'][1]    + corners['top_right'][1])   / 2)
-            x1 = int((corners['top_right'][0]   + corners['bottom_right'][0]) / 2)
+            x0 = int((corners['top_left'][0] + corners['bottom_left'][0]) / 2)
+            y0 = int((corners['top_left'][1] + corners['top_right'][1]) / 2)
+            x1 = int((corners['top_right'][0] + corners['bottom_right'][0]) / 2)
             y1 = int((corners['bottom_left'][1] + corners['bottom_right'][1]) / 2)
         except Exception:
             continue
 
-        # clip to image bounds
-        x0n, y0n = max(0, x0),          max(0, y0)
-        x1n, y1n = min(W, x1),          min(H, y1)
+        # clip into image bounds
+        x0n, y0n = max(0, x0), max(0, y0)
+        x1n, y1n = min(W, x1), min(H, y1)
         if x1n <= x0n or y1n <= y0n:
             continue
 
-        # 3) ensure we fully contain the decal blob
-        bx0, by0, bx1, by1 = blob_box
-        if not (x0n <= bx0 and y0n <= by0 and x1n >= bx1 and y1n >= by1):
-            continue
-
-        # 4) border‐ink penalty
+        # compute border‐ink penalty
         top    = blob_mask[y0n:y0n+edge, x0n:x1n]
         bottom = blob_mask[y1n-edge:y1n, x0n:x1n]
         left   = blob_mask[y0n:y1n, x0n:x0n+edge]
         right  = blob_mask[y0n:y1n, x1n-edge:x1n]
-        ink_penalty = int(top.sum() + bottom.sum() + left.sum() + right.sum())
+        penalty = int(top.sum() + bottom.sum() + left.sum() + right.sum())
 
-        # 5) edge‐detection penalty on the *border*
-        edges = cv2.Canny(gray[y0n:y1n, x0n:x1n], 50, 150)
-        # count edge pixels along border
-        border_pixels = (
-            edges[0, :].sum() + edges[-1, :].sum() +
-            edges[:, 0].sum() + edges[:, -1].sum()
-        ) / 255
-        edge_penalty = int(border_pixels * edge_penalty_weight)
+        # aspect‐ratio penalty
+        if expected_ratio:
+            ar = (x1n - x0n) / float(y1n - y0n)
+            ar_penalty = abs(ar - expected_ratio) * ar_weight
+        else:
+            ar_penalty = 0
 
-        # 6) aspect‐ratio penalty
-        ar = (x1n - x0n) / float(y1n - y0n)
-        ar_penalty = abs(ar - expected_ratio) * ar_weight if expected_ratio else 0
-
-        total_score = ink_penalty + edge_penalty + ar_penalty
+        total_score = penalty + ar_penalty
         candidates.append((total_score, (x0n, y0n, x1n, y1n)))
 
     if not candidates:
         raise RuntimeError("No valid crop candidates found")
 
-    # pick the candidate with minimal combined score
-
-
+    # choose the box with minimal combined score
     _, best_box = min(candidates, key=lambda t: t[0])
     return best_box
 
@@ -610,36 +594,90 @@ def wait_for_login(driver, timeout=300):
 
 def safe_download(part, tmp_dir, driver, base_url, profile):
     """
-    Attempt to download the PDF for `part`, retrying on lockout by
-    fully restarting the browser with increasing delays.
-    Returns a tuple (pdf_path, driver).
+    Attempt to download the PDF for `part`. If Selenium encounters the
+    "locked-out" sign-in lightbox (or any WebDriverException/Timeout),
+    fully quit Chrome, wait, restart it from scratch, and pause until
+    you land on the actual library search field. Do not move on to the
+    next part until the library is available again.
+
+    Returns a tuple (pdf_path, driver), where driver is the active WebDriver.
     """
-    delays = [10, 20, 30, 40, 50]
-    for delay in delays:
+    # Back-off delays in seconds
+    backoff = [10, 20, 30, 40, 50]
+
+    # If no driver passed in, start one immediately and wait for library
+    if driver is None:
+        driver = init_driver(tmp_dir, profile_dir=profile, headless=False)
+        driver.get(base_url)
+        # Block until the library search field appears OR we know it's locked
+        _wait_for_library_or_lock(driver)
+
+    for delay in backoff:
         try:
-            # Try the normal download path; will raise if locked out
+            # Try the normal download step
             return download_pdf_for_part(part, tmp_dir, driver, base_url), driver
         except (WebDriverException, TimeoutException) as e:
-            print(f"    · Locked out ({e}); closing browser and retrying in {delay}s…")
-            # Kill the hanging session
+            # Hit locked-out or other WebDriver error
+            print(f"    · Locked out or error ({e}); closing browser and retrying in {delay}s…")
+            # Always quit the old driver
             try:
                 driver.quit()
             except:
                 pass
             time.sleep(delay)
+
             # Start fresh
             driver = init_driver(tmp_dir, profile_dir=profile, headless=False)
             driver.get(base_url)
-            print("    · Waiting for library page to become available…")
-            # Block until the search field shows up again (or timeout)
-            try:
-                wait_for_login(driver, timeout=60)
-            except TimeoutException:
-                print(f"    · Still locked out after {delay}s; will retry.")
-                continue
 
-    # Final attempt (no further delays)
+            # Pause here until we land on the real library page
+            _wait_for_library_or_lock(driver)
+
+            # Then the loop will re-try download_pdf_for_part
+
+    # Final “last-ditch” attempt—no further back-off delays
     return download_pdf_for_part(part, tmp_dir, driver, base_url), driver
+
+
+def _wait_for_library_or_lock(driver):
+    """
+    Helper used by safe_download: after a browser restart, wait until we
+    see EITHER the library's search field OR the locked-out lightbox.
+
+    - If the search field appears, return immediately (we can continue).
+    - If the locked-out lightbox appears first, raise a WebDriverException
+      so safe_download will catch it and trigger the next back-off iteration.
+    """
+    from selenium.common.exceptions import TimeoutException
+
+    # We’ll poll every 5 seconds for up to 60 seconds:
+    max_wait = 60
+    poll_interval = 5
+    start = time.time()
+
+    while True:
+        elapsed = time.time() - start
+        if elapsed > max_wait:
+            # Give up waiting for either condition—assume locked-out
+            raise WebDriverException("Still locked after waiting for library")
+
+        # 1) Check for presence of the library search field:
+        try:
+            WebDriverWait(driver, 3).until(
+                EC.presence_of_element_located((By.ID, 'docLibContainer_search_field'))
+            )
+            # Found the real library → done waiting
+            return
+        except TimeoutException:
+            pass
+
+        # 2) Check if the locked-out sign-in box is present:
+        #    (This CSS selector comes from your original script)
+        if driver.find_elements(By.CSS_SELECTOR, 'div.sign-in-box.ext-sign-in-box'):
+            raise WebDriverException("Still locked—saw sign-in lightbox")
+
+        # 3) Otherwise, sleep a bit and retry
+        time.sleep(poll_interval)
     
 def find_aligned_blob_group(img_color, min_area=10000, tol=10, pad=20):
     """
@@ -745,7 +783,7 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
 
         try:
             # 1) Download PDF (auto-retries on WebDriver errors)
-            result = safe_download(search_part, tmp_dir, driver, base_url, profile)
+            result = safe_download(search_part, tmp_dir, None, base_url, profile)
             if isinstance(result, tuple):
                 pdf_path, driver = result
             else:
@@ -795,22 +833,27 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
             
             # ─── 2b) Now choose your crop in X and Y as before,
             # but clamp the top at y0_art:
-            # e.g. for bracket-template:
             print("    · Bracket-template crop…")
             x0, y0_old, x1, y1 = select_best_crop_box(img, template_sets)
-            # enforce no header above artwork
             y0 = max(y0_old, y0_art)
             crop_img = img[y0:y1, x0:x1]
             time.sleep(STEP_DELAY)
-    
+
             # 3) Try bracket‐template crop (guided by the PDF’s stated dims)
             print("    · Bracket-template crop…")
-            # parse the PDF for its H×W dims (inches)
+            # parse the PDF for its H×W dims (inches). w_in==0.0 means length‐only.
             h_in, w_in = parse_dimensions_from_pdf(pdf_path)
-            expected_ar = (w_in / h_in) if (h_in and w_in) else None
-        
+
+            if h_in > 0 and w_in > 0:
+                # We have both height & width – use directly
+                expected_ar = w_in / h_in
+            elif h_in > 0 and w_in == 0.0:
+                # Only “OVER ALL LENGTH” provided. Signal select_best_crop_box to derive ratio from blob.
+                expected_ar = 0.0
+            else:
+                expected_ar = None
+
             try:
-                # pass expected_ar into the selector (None if dims absent)
                 x0, y0, x1, y1 = select_best_crop_box(
                     img,
                     template_sets,
@@ -818,9 +861,8 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
                 )
                 print(f"    · Bracket crop box: {(x0, y0, x1, y1)}")
                 crop_img = img[y0:y1, x0:x1]
-        
+
             except RuntimeError as e:
-                # fallback if no good bracket candidates
                 print(f"    · No valid bracket candidates ({e}); falling back…")
                 # your existing blob or full‐logo fallback here, e.g.:
                 grp = find_aligned_blob_group(img, min_area=5000, tol=10, pad=20)
