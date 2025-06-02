@@ -229,14 +229,18 @@ def extract_color_label(pdf_path):
 def load_template_sets(root='templates'):
     """
     Look under root/set1…set6 for quad-templates.
+    Now supports .jpg, .jpeg, and .png files for each of:
+        top_left, top_right, bottom_left, bottom_right
     Returns a list of (templates, offsets) for each set.
     """
     quad_names = ['top_left','top_right','bottom_left','bottom_right']
     sets = []
+
     for folder in sorted(glob.glob(os.path.join(root, 'set*'))):
         tpl_dict, off_dict = {}, {}
         for quad in quad_names:
-            for ext in ('jpg','jpeg'):
+            # try jpg, jpeg, png in that order
+            for ext in ('jpg','jpeg','png'):
                 path = os.path.join(folder, f"{quad}.{ext}")
                 if os.path.exists(path):
                     img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
@@ -244,15 +248,20 @@ def load_template_sets(root='templates'):
                     h, w = edges.shape
                     tpl_dict[quad] = edges
                     # offsets inside the small crop marks
-                    if quad=='top_left':      off_dict[quad] = (w-1, h-1)
-                    elif quad=='top_right':   off_dict[quad] = (0,   h-1)
-                    elif quad=='bottom_left': off_dict[quad] = (w-1, 0)
-                    else:                     off_dict[quad] = (0,   0)
+                    if quad == 'top_left':
+                        off_dict[quad] = (w-1, h-1)
+                    elif quad == 'top_right':
+                        off_dict[quad] = (0, h-1)
+                    elif quad == 'bottom_left':
+                        off_dict[quad] = (w-1, 0)
+                    else:  # bottom_right
+                        off_dict[quad] = (0, 0)
                     break
-        if len(tpl_dict)==4:
+        if len(tpl_dict) == 4:
             sets.append((tpl_dict, off_dict))
+
     if not sets:
-        raise FileNotFoundError("No complete template-sets found under "+root)
+        raise FileNotFoundError("No complete template-sets found under " + root)
     return sets
 
 def detect_with_one_set(img_gray, templates, offsets):
@@ -284,6 +293,42 @@ def crop_blob_bbox(img_gray):
     c = max(cnts, key=cv2.contourArea)
     x, y, w, h = cv2.boundingRect(c)
     return (x, y, x + w, y + h)
+    
+def detect_enclosed_box(img_gray, min_area=5000, epsilon_frac=0.02):
+    """
+    Find the largest rectangular (4‐sided) contour in a grayscale image,
+    assuming that decal boxes often have a thin white border. Returns
+    (x0,y0,x1,y1) or None if no suitable rectangle is found.
+    
+    - min_area: ignore tiny boxes (< this many pixels).
+    - epsilon_frac: tolerance for approxPolyDP (fraction of perimeter).
+    """
+    # 1) Invert & threshold to find “white” borders (white ~ 255)
+    _, thresh = cv2.threshold(img_gray, 250, 255, cv2.THRESH_BINARY_INV)
+    # 2) Find contours
+    cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    best_box = None
+    best_area = 0
+
+    for c in cnts:
+        area = cv2.contourArea(c)
+        if area < min_area:
+            continue
+        peri = cv2.arcLength(c, True)
+        approx = cv2.approxPolyDP(c, epsilon_frac * peri, True)
+        # look for quadrilaterals (4 vertices) that are roughly rectangle‐shaped
+        if len(approx) == 4 and cv2.isContourConvex(approx):
+            # get bounding‐rect
+            x, y, w, h = cv2.boundingRect(approx)
+            # require some minimum aspect ratio (not too “skinny”)
+            if w > 10 and h > 10:
+                rect_area = w * h
+                # pick the largest rectangle found so far
+                if rect_area > best_area:
+                    best_area = rect_area
+                    best_box = (x, y, x + w, y + h)
+
+    return best_box  # may be None if nothing found
 
 def rect_intersection(a, b):
     """Intersection area of two rects a=(x0,y0,x1,y1), b likewise."""
@@ -398,15 +443,20 @@ def parse_dimensions_from_pdf(pdf_path):
       1) “Dimensions (h x w): 1.25" x 5.75"”
       2) “OVER ALL LENGTH IS 14 INCHES”
       3) any “#″ x #″” pattern
-    Returns (height_in, width_in) as floats, or (0.0, 0.0).
+    Returns a tuple (height_in, width_in, fallback_ar):
+      - height_in, width_in: floats (0.0 if unknown)
+      - fallback_ar: if only OVER ALL LENGTH was found, 
+                     returns an estimated (w:h) using pixel blob ratio,
+                     else None.
     """
-    import re
-    import pdfplumber
+    import pdfplumber, re
 
     text = ""
     with pdfplumber.open(pdf_path) as pdf:
         page = pdf.pages[0]
         text = page.extract_text() or ""
+        # Also grab a pixel version of the page to get blob dims
+        pix = page.to_image(resolution=72).original  # PIL‐like image
 
     # 1) Explicit (h x w) line
     m = re.search(
@@ -414,7 +464,7 @@ def parse_dimensions_from_pdf(pdf_path):
         text, re.IGNORECASE
     )
     if m:
-        return float(m.group(1)), float(m.group(2))
+        return float(m.group(1)), float(m.group(2)), None
 
     # 2) “OVER ALL LENGTH IS 14 INCHES”
     m2 = re.search(
@@ -423,15 +473,24 @@ def parse_dimensions_from_pdf(pdf_path):
     )
     if m2:
         length = float(m2.group(1))
-        # width unknown → leave as 0.0 (or derive from aspect ratio if you like)
-        return length, 0.0
+        # get pixel bbox of the “ink blob” for the page to guess height
+        gray = cv2.cvtColor(np.array(pix), cv2.COLOR_RGB2GRAY)
+        blob = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)[1]
+        cnts, _ = cv2.findContours(blob, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if cnts:
+            x, y, w, h = cv2.boundingRect(max(cnts, key=cv2.contourArea))
+            pixel_ar = w / float(h or 1)
+            # if page‐pixel AR >0, then real AR = length / (length/pixel_ar) = pixel_ar
+            return 0.0, length, pixel_ar
+        else:
+            return 0.0, length, None
 
     # 3) Any free “#″ x #″” fallback
     m3 = re.search(r'([\d.]+)\s*["”]\s*[x×]\s*([\d.]+)\s*["”]?', text)
     if m3:
-        return float(m3.group(1)), float(m3.group(2))
+        return float(m3.group(1)), float(m3.group(2)), None
 
-    return 0.0, 0.0
+    return 0.0, 0.0, None
     
 def extract_color_label(pdf_path: str,
                         crop_y0: float = None) -> str:
@@ -511,22 +570,26 @@ def match_one_corner(img_color, tpl_edges, offset, quadrant):
 def select_best_crop_box(img_color, template_sets, expected_ratio=None, edge=5, ar_weight=1000):
     """
     Try each template‐set to get a candidate box, then score by:
-      • penalty: how much “ink” lies on the 5px border
-      • aspect‐ratio penalty: how far each box’s AR is from expected_ratio
-    Return the (x0,y0,x1,y1) with the lowest combined score.
+      • penalty: how much “ink” lies on the edge‐border of size=edge
+      • AR penalty: how far each box’s AR is from expected_ratio (if given).
+    If no valid template candidates:
+      1) attempt an enclosed‐box contour detection
+      2) fallback to blob bounding‐box + margin.
+    Returns the (x0,y0,x1,y1) with the lowest combined score.
     """
     gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
     # everything below 250 is “ink”
-    _, blob = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
-    blob = (blob > 0).astype(np.uint8)
+    _, blob_mask = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
+    blob_mask = (blob_mask > 0).astype(np.uint8)
 
     candidates = []
-    H, W = blob.shape
+    H, W = blob_mask.shape
+
+    # 1) Build template‐matching candidates
     for templates, offsets in template_sets:
         try:
-            # detect the four corner brackets
             corners = detect_with_one_set(gray, templates, offsets)
-            # average into a rect
+            # average those four into (x0,y0,x1,y1)
             x0 = int((corners['top_left'][0] + corners['bottom_left'][0]) / 2)
             y0 = int((corners['top_left'][1] + corners['top_right'][1]) / 2)
             x1 = int((corners['top_right'][0] + corners['bottom_right'][0]) / 2)
@@ -534,35 +597,50 @@ def select_best_crop_box(img_color, template_sets, expected_ratio=None, edge=5, 
         except Exception:
             continue
 
-        # clip into image bounds
+        # Clip to image bounds
         x0n, y0n = max(0, x0), max(0, y0)
         x1n, y1n = min(W, x1), min(H, y1)
         if x1n <= x0n or y1n <= y0n:
             continue
 
-        # compute border‐ink penalty
-        top    = blob[y0n:y0n+edge, x0n:x1n]
-        bottom = blob[y1n-edge:y1n, x0n:x1n]
-        left   = blob[y0n:y1n, x0n:x0n+edge]
-        right  = blob[y0n:y1n, x1n-edge:x1n]
-        penalty = int(top.sum() + bottom.sum() + left.sum() + right.sum())
+        # Compute border‐ink penalty
+        top    = blob_mask[y0n:y0n+edge, x0n:x1n]
+        bottom = blob_mask[y1n-edge:y1n, x0n:x1n]
+        left   = blob_mask[y0n:y1n, x0n:x0n+edge]
+        right  = blob_mask[y0n:y1n, x1n-edge:x1n]
+        ink_penalty = int(top.sum() + bottom.sum() + left.sum() + right.sum())
 
-        # aspect‐ratio penalty
-        ar = (x1n - x0n) / float(y1n - y0n)
+        # Compute AR penalty
+        width_px  = x1n - x0n
+        height_px = y1n - y0n
+        ar = width_px / float(height_px or 1)
         if expected_ratio:
             ar_penalty = abs(ar - expected_ratio) * ar_weight
         else:
             ar_penalty = 0
 
-        total_score = penalty + ar_penalty
+        total_score = ink_penalty + ar_penalty
         candidates.append((total_score, (x0n, y0n, x1n, y1n)))
 
-    if not candidates:
-        raise RuntimeError("No valid crop candidates found")
+    # 2) If we got at least one candidate, pick the best
+    if candidates:
+        _, best_box = min(candidates, key=lambda t: t[0])
+        return best_box
 
-    # choose the box with minimal combined score
-    _, best_box = min(candidates, key=lambda t: t[0])
-    return best_box
+    # 3) No valid template candidates → try enclosed‐box contour
+    enclosed = detect_enclosed_box(gray, min_area=5000, epsilon_frac=0.02)
+    if enclosed:
+        return enclosed
+
+    # 4) Last resort: blob bounding‐box + small margin
+    blob_box = crop_blob_bbox(gray) or (0, 0, W, H)
+    bx, by, bx2, by2 = blob_box
+    pad = int(0.01 * min(H, W))
+    x0_f = max(0, bx - pad)
+    y0_f = max(0, by - pad)
+    x1_f = min(W, bx2 + pad)
+    y1_f = min(H, by2 + pad)
+    return (x0_f, y0_f, x1_f, y1_f)
 
 def wait_for_login(driver, timeout=300):
     """
@@ -778,16 +856,18 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
             # ─── 3) Try bracket‐template crop (guided by the PDF’s stated dims)
             print("    · Bracket-template crop…")
             # parse the PDF for its H×W dims (inches)
-            h_in, w_in = parse_dimensions_from_pdf(pdf_path)
-            expected_ar = (w_in / h_in) if (h_in and w_in) else None
+            h_in, w_in, fallback_ar = parse_dimensions_from_pdf(pdf_path)
+            if h_in and w_in:
+                expected_ar = w_in / h_in
+            elif fallback_ar:
+                expected_ar = fallback_ar
+            else:
+                expected_ar = None
 
             try:
                 # pass expected_ar into the selector (None if dims absent)
-                x0, y0, x1, y1 = select_best_crop_box(
-                    img,
-                    template_sets,
-                    expected_ratio=expected_ar
-                )
+                x0, y0, x1, y1 = select_best_crop_box(img, template_sets, expected_ratio=expected_ar)
+                
                 print(f"    · Bracket crop box: {(x0, y0, x1, y1)}")
                 crop_img = img[y0:y1, x0:x1]
             except RuntimeError as e:
