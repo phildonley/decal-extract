@@ -594,89 +594,74 @@ def wait_for_login(driver, timeout=300):
 
 def safe_download(part, tmp_dir, driver, base_url, profile):
     """
-    Attempt to download the PDF for `part`. If Selenium encounters the
-    "locked-out" sign-in lightbox (or any WebDriverException/Timeout),
-    fully quit Chrome, wait, restart it from scratch, and pause until
-    you land on the actual library search field. Do not move on to the
-    next part until the library is available again.
+    Attempt to download the PDF for `part`. If Selenium hits a WebDriverException
+    (locked-out page or browser crash), fully quit Chrome, wait, restart it from scratch,
+    and block until the manual login is done. Do not move on to the next part until
+    the library is truly available again.
 
-    Returns a tuple (pdf_path, driver), where driver is the active WebDriver.
+    Returns (pdf_path, driver), where driver is the (new or existing) WebDriver.
     """
-    # Back-off delays in seconds
+    # Back-off delays in seconds (will cycle through these on each failure)
     backoff = [10, 20, 30, 40, 50]
 
-    # If no driver passed in, start one immediately and wait for library
+    # If no driver passed in, start one and block until library is visible
     if driver is None:
         driver = init_driver(tmp_dir, profile_dir=profile, headless=False)
         driver.get(base_url)
-        # Block until the library search field appears OR we know it's locked
         _wait_for_library_or_lock(driver)
 
     for delay in backoff:
         try:
-            # Try the normal download step
+            # Try the normal download step; if it succeeds, we return immediately.
             return download_pdf_for_part(part, tmp_dir, driver, base_url), driver
+
         except (WebDriverException, TimeoutException) as e:
-            # Hit locked-out or other WebDriver error
-            print(f"    · Locked out or error ({e}); closing browser and retrying in {delay}s…")
-            # Always quit the old driver
+            # We hit a locked-out page or some other driver error.
+            print(f"    · Locked out or browser error ({e}); closing Chrome and retrying in {delay}s…")
             try:
                 driver.quit()
             except:
                 pass
+
+            print(f"    · Waiting {delay}s before re-opening Chrome…")
             time.sleep(delay)
 
-            # Start fresh
+            # Re-open a brand-new browser and block until library is available
             driver = init_driver(tmp_dir, profile_dir=profile, headless=False)
             driver.get(base_url)
-
-            # Pause here until we land on the real library page
             _wait_for_library_or_lock(driver)
 
-            # Then the loop will re-try download_pdf_for_part
+            # Then the loop goes to next iteration, where we re-attempt download_pdf_for_part.
 
-    # Final “last-ditch” attempt—no further back-off delays
+    # Final “last-ditch” attempt without any further delays
     return download_pdf_for_part(part, tmp_dir, driver, base_url), driver
 
 
-def _wait_for_library_or_lock(driver):
+def _wait_for_library_or_lock(driver, poll_interval=5):
     """
-    Helper used by safe_download: after a browser restart, wait until we
-    see EITHER the library's search field OR the locked-out lightbox.
-
-    - If the search field appears, return immediately (we can continue).
-    - If the locked-out lightbox appears first, raise a WebDriverException
-      so safe_download will catch it and trigger the next back-off iteration.
+    Block until we see the real library search field appear.
+    If the locked-out lightbox appears first, ignore it and keep polling.
+    i.e. we never timeout here; we only return once '#docLibContainer_search_field' is found.
     """
     from selenium.common.exceptions import TimeoutException
 
-    # We’ll poll every 5 seconds for up to 60 seconds:
-    max_wait = 60
-    poll_interval = 5
-    start = time.time()
-
     while True:
-        elapsed = time.time() - start
-        if elapsed > max_wait:
-            # Give up waiting for either condition—assume locked-out
-            raise WebDriverException("Still locked after waiting for library")
-
-        # 1) Check for presence of the library search field:
+        # 1) If the library search field is present, we’re done.
         try:
             WebDriverWait(driver, 3).until(
                 EC.presence_of_element_located((By.ID, 'docLibContainer_search_field'))
             )
-            # Found the real library → done waiting
-            return
+            return  # library is available again
         except TimeoutException:
             pass
 
-        # 2) Check if the locked-out sign-in box is present:
-        #    (This CSS selector comes from your original script)
+        # 2) If the lockout screen is present, ignore it and keep waiting
+        #    (we do not raise here; just give the user more time to log in).
         if driver.find_elements(By.CSS_SELECTOR, 'div.sign-in-box.ext-sign-in-box'):
-            raise WebDriverException("Still locked—saw sign-in lightbox")
+            print("    · Found lockout box—still waiting for manual re-login…")
+            # (do NOT quit; just keep looping)
 
-        # 3) Otherwise, sleep a bit and retry
+        # 3) Otherwise, sleep and try again.
         time.sleep(poll_interval)
     
 def find_aligned_blob_group(img_color, min_area=10000, tol=10, pad=20):
@@ -778,12 +763,12 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
         original_part = row['PART'].strip()
         tms           = row['TMS']
         search_part   = strip_gt_suffix(original_part)
-    
+
         print(f"[{i}] ➡️ Processing part={search_part} (orig={original_part}), TMS={tms}")
 
         try:
             # 1) Download PDF (auto-retries on WebDriver errors)
-            result = safe_download(search_part, tmp_dir, None, base_url, profile)
+            result = safe_download(search_part, tmp_dir, driver, base_url, profile)
             if isinstance(result, tuple):
                 pdf_path, driver = result
             else:
@@ -792,6 +777,11 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
             # 1a) skip if no document for this part
             if not pdf_path:
                 print(f"    · No document found for {original_part}; skipping.")
+                # … (append a “skipped” record) …
+                continue
+
+                print(f"    · PDF downloaded → {pdf_path}")
+            
                 records.append({
                     'ITEM_ID':         original_part,
                     'ITEM_TYPE':       '',
