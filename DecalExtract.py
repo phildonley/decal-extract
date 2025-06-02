@@ -902,11 +902,10 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
                 x0, y0, x1, y1 = select_best_crop_box(img, template_sets, expected_ratio=expected_ar)
                 # … perform crop …
             except RuntimeError as e:
-
-            # ─── 3b) Try bracket‐template crop (guided by the PDF’s stated dims)
-            print("    · Bracket-template crop…")
-            # parse the PDF for its H×W dims (inches)
-            h_in, w_in, fallback_ar = parse_dimensions_from_pdf(pdf_path)
+                # ─── 3b) Try bracket‐template crop (guided by the PDF’s stated dims)
+                print("    · Bracket-template crop…")
+                # parse the PDF for its H×W dims (inches)
+                h_in, w_in, fallback_ar = parse_dimensions_from_pdf(pdf_path)
             if h_in and w_in:
                 expected_ar = w_in / h_in
             elif fallback_ar:
