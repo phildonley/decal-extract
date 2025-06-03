@@ -940,14 +940,37 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
                     use_enclosed = False
 
                 # 4) If we’re using the enclosed rectangle, pad inside that border by 5px:
+                img_h, img_w = img.shape[:2]
+
                 if use_enclosed:
-                    PAD = 5
-                    x0c = use_rect[0] + PAD
-                    y0c = use_rect[1] + PAD
-                    x1c = use_rect[2] - PAD
-                    y1c = use_rect[3] - PAD
+                    # Expand the enclosed rectangle by 8% on each side
+                    x0e, y0e, x1e, y1e = use_rect
+                    rect_w = x1e - x0e
+                    rect_h = y1e - y0e
+                    pad_x = int(rect_w * 0.08)    # 8% of width
+                    pad_y = int(rect_h * 0.08)    # 8% of height
+
+                    # Compute a new crop that sits PAD outside the original border
+                    x0c = max(x0e - pad_x, 0)
+                    y0c = max(y0e - pad_y, 0)
+                    x1c = min(x1e + pad_x, img_w)
+                    y1c = min(y1e + pad_y, img_h)
+
                 else:
+                    # Use the bracket-based crop exactly (no expansion)
                     x0c, y0c, x1c, y1c = use_rect
+
+                    # Only clamp the top‐edge if *not* using the enclosed rectangle
+                    if abs(y0c - y0_art) > 20:
+                        y0c = y0_art
+                    else:
+                        y0c = min(y0c, y0_art + 20)
+
+                    # (We do not apply any percentage padding here—bracket output is assumed tight.)
+
+                # Crop the final image
+                crop_img = img[y0c : y1c, x0c : x1c]
+                print(f"   · Final crop box: {(x0c, y0c, x1c, y1c)}")
 
                 # 5) **Only clamp by y0_art if we DID NOT use the enclosed rectangle.**
                 if not use_enclosed:
