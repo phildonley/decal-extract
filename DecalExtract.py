@@ -901,7 +901,7 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
             # d)  Try the tightened‐up bracket‐template crop
             print("   · Bracket‐template crop (dim‐guided)…")
             try:
-                # 1) Run your existing four‐corner detection
+                # 1) Run your existing four‐corner bracket detection
                 x0b, y0b, x1b, y1b = select_best_crop_box(
                     img,
                     template_sets,
@@ -909,7 +909,7 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
                 )
                 bracket_rect = (x0b, y0b, x1b, y1b)
 
-                # 2) Also attempt to find a simple enclosed‐rectangle border
+                # 2) Meanwhile, detect the single rounded‐rectangle border (if it exists)
                 gray_for_rect = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
                 enclosed_rect = detect_enclosed_box(
                     gray_for_rect,
@@ -917,37 +917,51 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
                     epsilon_frac=0.02
                 )
 
-                # 3) If the enclosed rectangle exists, check how well the bracket rect overlaps it
+                # 3) If we found a border, compare overlap with bracket_rect
                 if enclosed_rect:
                     x0e, y0e, x1e, y1e = enclosed_rect
-                    # Area of the enclosed rectangle (the “true border”)
                     enclosed_area = (x1e - x0e) * (y1e - y0e)
-                    # Intersection area between bracket_rect and enclosed_rect
                     inter_area = rect_intersection(bracket_rect, enclosed_rect)
 
-                    # If the bracket box misses more than 10% of the enclosed area, use enclosed_rect instead
+                    # If bracket_rect covers < 90% of the true border area, switch to enclosed_rect
                     if enclosed_area > 0 and (inter_area / float(enclosed_area)) < 0.90:
-                        print("   · Bracket detection unreliable (low overlap); will use enclosed‐rectangle instead")
-                        x0c, y0c, x1c, y1c = enclosed_rect
+                        print("   · Bracket detection unreliable (low overlap); swapping to enclosed rectangle")
+                        use_rect = enclosed_rect
+                        use_enclosed = True
                     else:
-                        # Bracket‐based is fine
-                        x0c, y0c, x1c, y1c = bracket_rect
+                        use_rect = bracket_rect
+                        use_enclosed = False
                 else:
-                    # No enclosed border found, so stick with bracket output
-                    x0c, y0c, x1c, y1c = bracket_rect
+                    # No border found, stick with bracket output
+                    use_rect = bracket_rect
+                    use_enclosed = False
 
-                # 4) Now clamp the top‐edge against “ink‐top” for a little vertical safety
+                # 4) If we’re using the enclosed rectangle, crop just *inside* that border by a few pixels
+                if use_enclosed:
+                    PAD = 5
+                    x0c = x0e + PAD
+                    y0c = y0e + PAD
+                    x1c = x1e - PAD
+                    y1c = y1e - PAD
+                else:
+                    # Otherwise, use the bracket‐based coords directly
+                    x0c, y0c, x1c, y1c = use_rect
+
+                # 5) In either case, clamp the top edge so we don’t cut too far below any “ink top”
                 if abs(y0c - y0_art) > 20:
                     y0c = y0_art
                 else:
                     y0c = min(y0c, y0_art + 20)
 
+                # 6) Final crop
                 crop_img = img[y0c : y1c, x0c : x1c]
                 print(f"   · Final crop box: {(x0c, y0c, x1c, y1c)}")
 
             except RuntimeError as e:
-                # “No valid bracket candidates” or strict AR‐check dropped them—go down the fallback chain
+                # …then your existing fallback chain kicks in (blobs, “full‐logo,” etc.)…
                 print(f"   · No valid bracket candidates ({e}); falling back…")
+                # (rest of fallback unchanged)
+
 
                 # e.1) Fallback #1: aligned‐blobs group
                 grp = find_aligned_blob_group(img, min_area=5000, tol=10, pad=20)
