@@ -977,33 +977,34 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
             h_in, w_in = parse_dimensions_from_pdf(pdf_path)
             expected_ar = (w_in / h_in) if (h_in and w_in) else None
             
-            # d)  Try crop-mark / bracket-template / union-of-ink, in that order:
-            print("   · Attempting crop-mark → bracket → union-of-ink…")
+            # d)  Attempt crop‐mark → bracket → union‐of‐all‐ink (with 5% padding)
+            print("   · Attempting crop‐mark → bracket → union‐of‐all‐ink…")
 
+            # Prepare grayscale for crop‐mark detection:
             gray_for_rect = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             enclosed_rect = detect_enclosed_box(gray_for_rect, min_area=5000)
 
             crop_img = None
 
-            # 1) If detect_enclosed_box() finds a rounded-corner border, expand it by 8%:
+            # 1) If we found a rounded‐corner border, expand it uniformly by 5% of the smaller side:
             if enclosed_rect:
                 ex0, ey0, ex1, ey1 = enclosed_rect
                 rect_w = ex1 - ex0
                 rect_h = ey1 - ey0
 
-                pad_x = int(rect_w * 0.08)  # 8% of width
-                pad_y = int(rect_h * 0.08)  # 8% of height
+                # 5% of the smaller dimension → uniform padding on all sides
+                pad = int(min(rect_w, rect_h) * 0.05)
 
-                x0c = max(ex0 - pad_x, 0)
-                y0c = max(ey0 - pad_y, 0)
-                x1c = min(ex1 + pad_x, w_img)
-                y1c = min(ey1 + pad_y, h_img)
+                x0c = max(ex0 - pad, 0)
+                y0c = max(ey0 - pad, 0)
+                x1c = min(ex1 + pad, w_img)
+                y1c = min(ey1 + pad, h_img)
 
                 crop_img = img[y0c:y1c, x0c:x1c]
-                print(f"   · Using crop-mark + 8% pad: {(x0c, y0c, x1c, y1c)}")
+                print(f"   · Using crop‐mark + 5% pad: {(x0c, y0c, x1c, y1c)}")
 
             else:
-                # 2) Fallback: try bracket-template detection
+                # 2) Fallback #1: try bracket‐template detection
                 try:
                     x0b, y0b, x1b, y1b = select_best_crop_box(
                         img,
@@ -1013,46 +1014,67 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
                     b_w = x1b - x0b
                     b_h = y1b - y0b
 
-                    pad_x = int(b_w * 0.08)  # 8% of bracket width
-                    pad_y = int(b_h * 0.08)  # 8% of bracket height
+                    # 5% of the smaller dimension → uniform padding on all sides
+                    pad = int(min(b_w, b_h) * 0.05)
 
-                    x0c = max(x0b - pad_x, 0)
-                    y0c = max(y0b - pad_y, 0)
-                    x1c = min(x1b + pad_x, w_img)
-                    y1c = min(y1b + pad_y, h_img)
+                    x0c = max(x0b - pad, 0)
+                    y0c = max(y0b - pad, 0)
+                    x1c = min(x1b + pad, w_img)
+                    y1c = min(y1b + pad, h_img)
 
                     crop_img = img[y0c:y1c, x0c:x1c]
-                    print(f"   · Using bracket-crop + 8% pad: {(x0c, y0c, x1c, y1c)}")
+                    print(f"   · Using bracket‐crop + 5% pad: {(x0c, y0c, x1c, y1c)}")
 
                 except Exception as e:
-                    # 3) Bracket detection failed → union-of-ink contours
-                    print(f"   · Bracket detection failed ({e}); falling back to union-of-ink…")
+                    # 3) Fallback #2: union‐of‐all‐ink contours
+                    print(f"   · Bracket detection failed ({e}); falling back to union‐of‐all‐ink…")
 
-                    # Try “big ink” first
-                    rect_union = find_union_of_ink_contours(img, min_area=2000, pad_pct=0.08)
+                    # Build a mask of every non-white pixel and find all contours:
+                    gray_full = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                    _, thresh_full = cv2.threshold(gray_full, 250, 255, cv2.THRESH_BINARY_INV)
+                    cnts_full, _ = cv2.findContours(thresh_full, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-                    if not rect_union:
-                        # If that failed, try “smaller ink” (area ≥ 500 px²)
-                        rect_union = find_union_of_ink_contours(img, min_area=500, pad_pct=0.08)
+                    if cnts_full:
+                        # Union the bounding boxes of every contour (no area filter)
+                        x0u = w_img
+                        y0u = h_img
+                        x1u = 0
+                        y1u = 0
 
-                    if rect_union:
-                        ux0, uy0, ux1, uy1 = rect_union
+                        for c in cnts_full:
+                            x, y, w, h = cv2.boundingRect(c)
+                            x0u = min(x0u, x)
+                            y0u = min(y0u, y)
+                            x1u = max(x1u, x + w)
+                            y1u = max(y1u, y + h)
 
-                        # Clamp the top edge to y0_art so we don’t pull in too much blank above:
-                        uy0_clamped = max(uy0, y0_art)
+                        # 5% padding on all sides of that union‐box:
+                        union_w = x1u - x0u
+                        union_h = y1u - y0u
+                        pad = int(min(union_w, union_h) * 0.05)
 
-                        crop_img = img[uy0_clamped:uy1, ux0:ux1]
-                        print(f"   · Using union-of-ink + clamp-top: {(ux0, uy0_clamped, ux1, uy1)}")
+                        x0u = max(x0u - pad, 0)
+                        y0u = max(y0u - pad, 0)
+                        x1u = min(x1u + pad, w_img)
+                        y1u = min(y1u + pad, h_img)
+
+                        # But clamp the top edge so we don’t include an empty band above the art:
+                        y0u_clamped = max(y0u, y0_art)
+
+                        crop_img = img[y0u_clamped:y1u, x0u:x1u]
+                        print(f"   · Using union‐of‐all‐ink + clamp top: {(x0u, y0u_clamped, x1u, y1u)}")
 
                     else:
-                        # 4) Union-of-ink failed entirely → 1% full-page margin crop
+                        # 4) Fallback #3: full‐page 1% margin (if absolutely nothing else)
                         margin = int(0.01 * min(h_img, w_img))
                         crop_img = img[
                             margin : h_img - margin,
                             margin : w_img - margin
                         ]
-                        print("   · Union-of-ink failed; using full-page margin crop")
-            
+                        print("   · No ink detected; using full‐page 1% margin crop")
+
+            # At this point, `crop_img` must be non‐None
+
             # f)  Save the final crop
             jpg_name = f"{tms}.{original_part}.{seq}.jpg"
             out_jpg  = os.path.join(imgs_dir, jpg_name)
