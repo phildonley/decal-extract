@@ -1002,7 +1002,7 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
                 else:
                     # e.2) Fallback #2: enclosed rectangle
                     gray_fb = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                    rect = detect_enclosed_box(gray_fb, min_area=5000, epsilon_frac=0.02)
+                    rect = detect_enclosed_box(gray_fb, min_area=5000)
                     if rect:
                         x0e2, y0e2, x1e2, y1e2 = rect
                         print(f"   · Enclosed rectangle crop: {(x0e2, y0e2, x1e2, y1e2)}")
