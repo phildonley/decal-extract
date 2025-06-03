@@ -217,6 +217,70 @@ def render_pdf_color_page(pdf_path, dpi=300):
         return cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
     else:
         return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        
+def find_union_of_ink_contours(img_color, min_area=2000, pad_pct=0.08):
+    """
+    From a BGR image (300 dpi) of a PDF page, build a mask of any non-white pixels
+    (i.e. “ink” of any color). Find all contours whose area is >= min_area, take their
+    union bounding box, and pad that box on all sides by pad_pct (fraction of box size).
+    Returns (x0, y0, x1, y1) or None if no contour of sufficient size is found.
+
+    - img_color: the full-resolution (300 dpi) BGR numpy array.
+    - min_area: ignore any contour smaller than this (in pixels^2). Default=2000.
+    - pad_pct: fraction of the union-box’s width/height to pad on each side. Default=0.08 (8%).
+
+    Example usage:
+        rect = find_union_of_ink_contours(img, min_area=2000, pad_pct=0.08)
+        if rect:
+            x0, y0, x1, y1 = rect
+            cropped = img[y0:y1, x0:x1]
+    """
+    import cv2
+    import numpy as np
+
+    # 1) Build an “ink” mask = any pixel that isn’t nearly white.
+    #    Convert to grayscale; any pixel < 250 (i.e. darker than almost-white) counts as ink.
+    gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
+    _, thresh = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
+    # Now 'thresh' is 255 at any location where grayscale < 250 (black, red, etc.),
+    # and 0 at pure-white locations.
+
+    # 2) Find all external contours on that mask
+    cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return None
+
+    # 3) Keep only contours whose area >= min_area
+    big_boxes = []
+    for c in cnts:
+        area = cv2.contourArea(c)
+        if area < min_area:
+            continue
+        x, y, w, h = cv2.boundingRect(c)
+        big_boxes.append((x, y, w, h))
+
+    if not big_boxes:
+        return None
+
+    # 4) Union all those bounding rects into one big box
+    x0 = min(box[0] for box in big_boxes)
+    y0 = min(box[1] for box in big_boxes)
+    x1 = max(box[0] + box[2] for box in big_boxes)
+    y1 = max(box[1] + box[3] for box in big_boxes)
+
+    # 5) Pad that union by pad_pct in each direction, clamped to image edges
+    img_h, img_w = img_color.shape[:2]
+    rect_w = x1 - x0
+    rect_h = y1 - y0
+    pad_x = int(rect_w * pad_pct)
+    pad_y = int(rect_h * pad_pct)
+
+    x0p = max(x0 - pad_x, 0)
+    y0p = max(y0 - pad_y, 0)
+    x1p = min(x1 + pad_x, img_w)
+    y1p = min(y1 + pad_y, img_h)
+
+    return (x0p, y0p, x1p, y1p)
 
 def extract_color_label(pdf_path):
     """
@@ -436,10 +500,17 @@ def parse_dimensions_from_pdf(pdf_path):
     Scan the first page of pdf for:
       1) “Dimensions (h x w): 1.25" x 5.75"”
       2) “OVER ALL LENGTH IS 14 INCHES”
-      3) any “#″ x #″” pattern
+      3) “450 mm x 129 mm”  (millimeters → inches)
+      4) any free “#″ x #″” fallback (inches)
 
-    Returns (height_in, width_in) as floats, or (length_in, None) if only length is present,
-    or (0.0, 0.0) if none found.
+    Returns:
+      - (height_in, width_in) in inches as floats,
+      - OR (length_in, None) if only an “OVER ALL LENGTH” was present,
+      - OR (0.0, 0.0) if nothing parseable found.
+
+    Notes:
+      • If you find an “mm” match, you convert each number with / 25.4 → inch.
+      • This order of checks ensures that “mm” lines get priority over a generic “#″ x #″” fallback.
     """
     import pdfplumber
     import re
@@ -449,9 +520,9 @@ def parse_dimensions_from_pdf(pdf_path):
         page = pdf.pages[0]
         text = page.extract_text() or ""
 
-    # 1) Explicit (h x w) line
+    # 1) Explicit (h x w) in inches
     m = re.search(
-        r'Dimensions\s*\(h\s*[x×]\s*w\)\s*:\s*([\d.]+)\s*["”]?\s*[x×]\s*([\d.]+)\s*["”]?',
+        r'Dimensions\s*\(\s*h\s*[x×]\s*w\s*\)\s*:\s*([\d.]+)\s*["”]?\s*[x×]\s*([\d.]+)\s*["”]?',
         text, re.IGNORECASE
     )
     if m:
@@ -463,15 +534,28 @@ def parse_dimensions_from_pdf(pdf_path):
         text, re.IGNORECASE
     )
     if m2:
-        length = float(m2.group(1))
-        # width unknown → return None for width, to let code compute a provisional aspect ratio
-        return length, None
+        length_in = float(m2.group(1))
+        return length_in, None
 
-    # 3) Any free “#″ x #″” fallback
+    # 3) Millimeter line: “450 mm x 129 mm” (may use lowercase mm or uppercase MM)
+    mmm = re.search(
+        r'([\d.]+)\s*mm\s*[x×]\s*([\d.]+)\s*mm',
+        text, re.IGNORECASE
+    )
+    if mmm:
+        # Convert each mm → inches by dividing by 25.4
+        h_mm = float(mmm.group(1))
+        w_mm = float(mmm.group(2))
+        h_in = h_mm / 25.4
+        w_in = w_mm / 25.4
+        return h_in, w_in
+
+    # 4) Any free “#″ x #″” fallback (inches)
     m3 = re.search(r'([\d.]+)\s*["”]\s*[x×]\s*([\d.]+)\s*["”]?', text)
     if m3:
         return float(m3.group(1)), float(m3.group(2))
 
+    # Nothing matched
     return 0.0, 0.0
     
 def extract_color_label(pdf_path: str,
@@ -1029,13 +1113,21 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
                                 crop_img = img[by:by2, bx:bx2]
 
                             else:
-                                # e.5) Final fallback: full‐page margin
-                                margin = int(0.01 * min(h_img, w_img))
-                                print("   · Full‐page margin crop")
-                                crop_img = img[
-                                    margin : h_img - margin,
-                                    margin : w_img - margin
-                                ]
+                                # ── e.5) Final fallback: union of all ink contours (including red text) ──
+                                print("   · No blob-bbox/AR match; attempting union of ALL ink contours…")
+                                rect_union = find_union_of_ink_contours(img, min_area=2000, pad_pct=0.08)
+                                if rect_union:
+                                    x0u, y0u, x1u, y1u = rect_union
+                                    print(f"   · Union-of-ink-contours crop: {(x0u, y0u, x1u, y1u)}")
+                                    crop_img = img[y0u:y1u, x0u:x1u]
+                                else:
+                                    # If *that* also fails (no ink at all), do a 1% full-page margin crop
+                                    margin = int(0.01 * min(h_img, w_img))
+                                    print("   · Union-of-ink failed; doing full-page margin crop")
+                                    crop_img = img[
+                                        margin : h_img - margin,
+                                        margin : w_img - margin
+                                    ]
             
             # f)  Save the final crop
             jpg_name = f"{tms}.{original_part}.{seq}.jpg"
