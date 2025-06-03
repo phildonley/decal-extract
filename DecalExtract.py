@@ -290,41 +290,39 @@ def crop_blob_bbox(img_gray):
     x, y, w, h = cv2.boundingRect(c)
     return (x, y, x + w, y + h)
     
-def detect_enclosed_box(img_gray, min_area=5000, epsilon_frac=0.02):
+def detect_enclosed_box(img_gray, min_area=5000):
     """
-    Find the largest rectangular (4‐sided) contour in a grayscale image,
-    assuming that decal boxes often have a thin white border. Returns
-    (x0,y0,x1,y1) or None if no suitable rectangle is found.
-    
-    - min_area: ignore tiny boxes (< this many pixels).
-    - epsilon_frac: tolerance for approxPolyDP (fraction of perimeter).
+    Find the contour with the largest perimeter in a binary‐inverted version of img_gray,
+    then return its bounding‐rectangle. This reliably catches a single rounded‐corner border
+    even if the top edge is lightly anti‐aliased.
+    - img_gray: a BGR→Gray frame (numpy array)
+    - min_area: ignore tiny contours smaller than this (pixels^2)
+    Returns (x0, y0, x1, y1) or None.
     """
-    # 1) Invert & threshold to find “white” borders (white ~ 255)
+    # 1) Invert threshold so that nearly‐black border+ink → white (255), background → 0
     _, thresh = cv2.threshold(img_gray, 250, 255, cv2.THRESH_BINARY_INV)
-    # 2) Find contours
-    cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    best_box = None
-    best_area = 0
+
+    # 2) Find all external contours on that mask (CHAIN_APPROX_NONE to preserve curves)
+    cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+
+    best_contour = None
+    best_peri = 0
 
     for c in cnts:
         area = cv2.contourArea(c)
         if area < min_area:
-            continue
+            continue  # ignore tiny specks
         peri = cv2.arcLength(c, True)
-        approx = cv2.approxPolyDP(c, epsilon_frac * peri, True)
-        # look for quadrilaterals (4 vertices) that are roughly rectangle‐shaped
-        if len(approx) == 4 and cv2.isContourConvex(approx):
-            # get bounding‐rect
-            x, y, w, h = cv2.boundingRect(approx)
-            # require some minimum aspect ratio (not too “skinny”)
-            if w > 10 and h > 10:
-                rect_area = w * h
-                # pick the largest rectangle found so far
-                if rect_area > best_area:
-                    best_area = rect_area
-                    best_box = (x, y, x + w, y + h)
+        if peri > best_peri:
+            best_peri = peri
+            best_contour = c
 
-    return best_box  # may be None if nothing found
+    if best_contour is None:
+        return None
+
+    # 3) Return the bounding‐rectangle of that “longest perimeter” contour
+    x, y, w, h = cv2.boundingRect(best_contour)
+    return (x, y, x + w, y + h)
 
 def rect_intersection(a, b):
     """Intersection area of two rects a=(x0,y0,x1,y1), b likewise."""
@@ -901,7 +899,7 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
             # d)  Try the tightened‐up bracket‐template crop
             print("   · Bracket‐template crop (dim‐guided)…")
             try:
-                # 1) Run your existing four‐corner bracket detection
+                # 1) Run your normal four‐corner bracket detection
                 x0b, y0b, x1b, y1b = select_best_crop_box(
                     img,
                     template_sets,
@@ -909,21 +907,26 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
                 )
                 bracket_rect = (x0b, y0b, x1b, y1b)
 
-                # 2) Meanwhile, detect the single rounded‐rectangle border (if it exists)
+                # 2) Detect the (rounded) border via the new largest-perimeter function
                 gray_for_rect = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                enclosed_rect = detect_enclosed_box(
-                    gray_for_rect,
-                    min_area=5000,
-                    epsilon_frac=0.02
-                )
+                enclosed_rect = detect_enclosed_box(gray_for_rect, min_area=5000)
 
-                # 3) If we found a border, compare overlap with bracket_rect
+                # 3) Decide whether the bracket‐template box “covers” most of that border
                 if enclosed_rect:
                     x0e, y0e, x1e, y1e = enclosed_rect
                     enclosed_area = (x1e - x0e) * (y1e - y0e)
-                    inter_area = rect_intersection(bracket_rect, enclosed_rect)
 
-                    # If bracket_rect covers < 90% of the true border area, switch to enclosed_rect
+                    # Compute intersection area between bracket_rect and enclosed_rect
+                    ix0 = max(x0b, x0e)
+                    iy0 = max(y0b, y0e)
+                    ix1 = min(x1b, x1e)
+                    iy1 = min(y1b, y1e)
+
+                    inter_area = 0
+                    if ix1 > ix0 and iy1 > iy0:
+                        inter_area = (ix1 - ix0) * (iy1 - iy0)
+
+                    # If bracket misses >10% of the border area, switch to enclosed_rect
                     if enclosed_area > 0 and (inter_area / float(enclosed_area)) < 0.90:
                         print("   · Bracket detection unreliable (low overlap); swapping to enclosed rectangle")
                         use_rect = enclosed_rect
@@ -932,33 +935,33 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
                         use_rect = bracket_rect
                         use_enclosed = False
                 else:
-                    # No border found, stick with bracket output
+                    # No border found; use whatever bracket gave us
                     use_rect = bracket_rect
                     use_enclosed = False
 
-                # 4) If we’re using the enclosed rectangle, crop just *inside* that border by a few pixels
+                # 4) If we’re using the enclosed rectangle, pad inside that border by 5px:
                 if use_enclosed:
                     PAD = 5
-                    x0c = x0e + PAD
-                    y0c = y0e + PAD
-                    x1c = x1e - PAD
-                    y1c = y1e - PAD
+                    x0c = use_rect[0] + PAD
+                    y0c = use_rect[1] + PAD
+                    x1c = use_rect[2] - PAD
+                    y1c = use_rect[3] - PAD
                 else:
-                    # Otherwise, use the bracket‐based coords directly
                     x0c, y0c, x1c, y1c = use_rect
 
-                # 5) In either case, clamp the top edge so we don’t cut too far below any “ink top”
-                if abs(y0c - y0_art) > 20:
-                    y0c = y0_art
-                else:
-                    y0c = min(y0c, y0_art + 20)
+                # 5) **Only clamp by y0_art if we DID NOT use the enclosed rectangle.**
+                if not use_enclosed:
+                    if abs(y0c - y0_art) > 20:
+                        y0c = y0_art
+                    else:
+                        y0c = min(y0c, y0_art + 20)
 
-                # 6) Final crop
+                # 6) Crop and report
                 crop_img = img[y0c : y1c, x0c : x1c]
                 print(f"   · Final crop box: {(x0c, y0c, x1c, y1c)}")
 
             except RuntimeError as e:
-                # …then your existing fallback chain kicks in (blobs, “full‐logo,” etc.)…
+                # …then the existing fallback chain kicks in (blobs, “full‐logo,” etc.)…
                 print(f"   · No valid bracket candidates ({e}); falling back…")
                 # (rest of fallback unchanged)
 
