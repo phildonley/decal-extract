@@ -785,18 +785,11 @@ def find_aligned_blob_group(img_color, min_area=10000, tol=10, pad=20):
     return (x0, y0, x1, y1)
 
 def main(input_sheet, output_root, base_url, profile=None, seq=105):
-    import pandas as pd
-    import datetime
-    import os
-    import shutil
-    import time
-    from selenium.common.exceptions import WebDriverException, TimeoutException
-
     # ─── Prepare output directories ────────────────────────────────────────────
-    today      = datetime.datetime.now().strftime('%m%d%Y')
-    base_name  = f"decal_output_{today}"
-    out_dir    = os.path.join(output_root, base_name)
-    idx        = 1
+    today     = datetime.datetime.now().strftime('%m%d%Y')
+    base_name = f"decal_output_{today}"
+    out_dir   = os.path.join(output_root, base_name)
+    idx = 1
     while os.path.exists(out_dir):
         out_dir = os.path.join(output_root, f"{base_name}_{idx}")
         idx += 1
@@ -811,35 +804,10 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
     # ─── Launch browser & load library ─────────────────────────────────────────
     driver = init_driver(tmp_dir, profile_dir=profile)
     print("· Browser launched")
-    try:
-        driver.get(base_url)
-        wait = WebDriverWait(driver, 20)
-        wait.until(EC.presence_of_element_located((By.ID, 'docLibContainer_search_field')))
-        print("· Library page ready")
-    except (WebDriverException, TimeoutException):
-        print("· Locked out or error on initial load; attempting retry loop…")
-        driver.quit()
-        driver = None
-
-        # Retry loop: quit & reinitialize until search field appears
-        retry_delays = [10, 20, 30, 40, 50]
-        for delay in retry_delays:
-            print(f"   · Waiting {delay}s before re-opening Chrome…")
-            time.sleep(delay)
-            try:
-                driver = init_driver(tmp_dir, profile_dir=profile)
-                driver.get(base_url)
-                wait = WebDriverWait(driver, 20)
-                wait.until(EC.presence_of_element_located((By.ID, 'docLibContainer_search_field')))
-                print("   · Library page ready (post-retry)")
-                break
-            except (WebDriverException, TimeoutException):
-                print(f"   · Still locked out after {delay}s; will retry next delay.")
-                if driver:
-                    driver.quit()
-                driver = None
-        else:
-            raise RuntimeError("Unable to reach Document Library after retries.")
+    driver.get(base_url)
+    wait = WebDriverWait(driver, 20)
+    wait.until(EC.presence_of_element_located((By.ID, 'docLibContainer_search_field')))
+    print("· Library page ready")
 
     # ─── Load templates once ───────────────────────────────────────────────────
     template_sets = load_template_sets('templates')
@@ -848,168 +816,172 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
     # ─── Read parts list ───────────────────────────────────────────────────────
     df = pd.read_excel(input_sheet, dtype=str)
     df.columns = df.columns.str.upper()
-    df.rename(columns={df.columns[0]: 'PART', df.columns[1]: 'TMS'}, inplace=True)
+    df.rename(columns={df.columns[0]:'PART', df.columns[1]:'TMS'}, inplace=True)
     records = []
     ts = datetime.datetime.now().strftime('%Y%m%d_%H%M') + '00'
 
     # ─── Loop over each row ────────────────────────────────────────────────────
     for i, row in df.iterrows():
-        original_part     = row['PART'].strip()
-        tms               = row['TMS']
-        search_part       = strip_gt_suffix(original_part)
-        print(f"[{i}] ➡️ Processing part={search_part} (orig={original_part}), TMS={tms}")
+        original_part = row['PART'].strip()
+        tms           = row['TMS']
+        search_part   = strip_gt_suffix(original_part)
 
-        # Ensure driver is alive before attempting download
-        if driver is None:
-            print("   · WebDriver is not running; attempting to re-open…")
-            retry_delays = [10, 20, 30, 40, 50]
-            for delay in retry_delays:
-                print(f"     · Waiting {delay}s before re-opening Chrome…")
-                time.sleep(delay)
-                try:
-                    driver = init_driver(tmp_dir, profile_dir=profile)
-                    driver.get(base_url)
-                    wait = WebDriverWait(driver, 20)
-                    wait.until(EC.presence_of_element_located((By.ID, 'docLibContainer_search_field')))
-                    print("     · Library page ready (after re-opening)")
-                    break
-                except (WebDriverException, TimeoutException):
-                    print(f"     · Still locked out after {delay}s; will retry next delay.")
-                    if driver:
-                        driver.quit()
-                    driver = None
-            else:
-                print("   · Unable to reinitialize WebDriver; aborting further processing.")
-                break  # Exit the loop completely
+        print(f"[{i}] ➡️ Processing part={search_part} (orig={original_part}), TMS={tms}")
 
         try:
             # 1) Download PDF (auto-retries on WebDriver errors)
-            pdf_result = safe_download(search_part, tmp_dir, driver, base_url, profile)
-            if isinstance(pdf_result, tuple):
-                pdf_path, driver = pdf_result
+            result = safe_download(search_part, tmp_dir, driver, base_url, profile)
+            if isinstance(result, tuple):
+                pdf_path, driver = result
             else:
-                pdf_path = pdf_result
+                pdf_path = result
 
             # 1a) skip if no document for this part
             if not pdf_path:
-                print(f"   · No document found for {original_part}; skipping.")
+                print(f"    · No document found for {original_part}; skipping.")
                 records.append({
-                    'ITEM_ID':       original_part,
-                    'ITEM_TYPE':     '',
-                    'DESCRIPTION':   '',
-                    'NET_LENGTH':    0,
-                    'NET_WIDTH':     0,
-                    'NET_HEIGHT':    THICKNESS_IN,
-                    'NET_WEIGHT':    0,
-                    'NET_VOLUME':    0,
-                    'NET_DIM_WGT':   0,
-                    'DIM_UNIT':      'in',
-                    'WGT_UNIT':      'lb',
-                    'VOL_UNIT':      'in',
-                    'FACTOR':        FACTOR,
-                    'SITE_ID':       SITE_ID,
-                    'TIME_STAMP':    ts,
-                    'OPT_INFO_2':    'N',
-                    'OPT_INFO_3':    'N',
-                    'OPT_INFO_8':    0,
+                    'ITEM_ID':         original_part,
+                    'ITEM_TYPE':       '',
+                    'DESCRIPTION':     '',
+                    'NET_LENGTH':      0,
+                    'NET_WIDTH':       0,
+                    'NET_HEIGHT':      THICKNESS_IN,
+                    'NET_WEIGHT':      0,
+                    'NET_VOLUME':      0,
+                    'NET_DIM_WGT':     0,
+                    'DIM_UNIT':        'in',
+                    'WGT_UNIT':        'lb',
+                    'VOL_UNIT':        'in',
+                    'FACTOR':          FACTOR,
+                    'SITE_ID':         SITE_ID,
+                    'TIME_STAMP':      ts,
+                    'OPT_INFO_2':      'N',
+                    'OPT_INFO_3':      'N',
+                    'OPT_INFO_8':      0,
                     'IMAGE_FILE_NAME': '',
-                    'UPDATED':       'N'
+                    'UPDATED':         'N'
                 })
                 continue
 
-            print(f"   · PDF downloaded → {pdf_path}")
+            print(f"    · PDF downloaded → {pdf_path}")
 
-            # ─── 2) Render & crop logic ─────────────────────────────────────────────
-            img       = render_pdf_color_page(pdf_path, dpi=DPI)
+            # ─── 2a) Render first page to BGR image & build ink mask ───────────────
+            img = render_pdf_color_page(pdf_path, dpi=DPI)
             h_img, w_img = img.shape[:2]
-            gray      = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            _, blob   = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
-            ys        = np.where(blob.sum(axis=1) > 0)[0]
-            y0_art    = int(ys.min()) if ys.size else 0
-            PAD_TOP   = 5
-            y0_art    = max(0, y0_art - PAD_TOP)
+            gray        = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            _, blob     = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
+            ys = np.where(blob.sum(axis=1) > 0)[0]
+            y0_art = int(ys.min()) if ys.size else 0
+            PAD_TOP = 5
+            y0_art = max(0, y0_art - PAD_TOP)
 
-            # 2a) Attempt primary bracket-based crop using parsed dimensions
-            print("   · Bracket-template crop…")
-            h_in, w_in      = parse_dimensions_from_pdf(pdf_path)
-            expected_ar     = (w_in / h_in) if (h_in and w_in) else None
+            # ─── 2b) Initial bracket-template crop for header clamp ────────────────
+            print("    · Bracket-template crop…")
+            try:
+                x0, y0_old, x1, y1 = select_best_crop_box(img, template_sets)
+                y0 = max(y0_old, y0_art)
+                crop_img = img[y0:y1, x0:x1]
+            except RuntimeError:
+                crop_img = None
+
+            # ─── 3) Try bracket-template crop guided by PDF dims ────────────────────
+            print("    · Bracket-template crop (dim-guided)…")
+            h_in, w_in = parse_dimensions_from_pdf(pdf_path)
+            expected_ar = (w_in / h_in) if (h_in and w_in) else None
 
             try:
                 x0, y0, x1, y1 = select_best_crop_box(img, template_sets, expected_ratio=expected_ar)
-                y0             = max(y0, y0_art)
-                crop_img       = img[y0:y1, x0:x1]
-                print(f"   · Bracket crop box: {(x0, y0, x1, y1)}")
+                print(f"    · Bracket crop box: {(x0, y0, x1, y1)}")
+                crop_img = img[y0:y1, x0:x1]
             except RuntimeError as e:
-                print(f"   · No valid bracket candidates ({e}); falling back…")
-                # 2b) Fallback: aligned blob group
+                print(f"    · No valid bracket candidates ({e}); falling back…")
                 grp = find_aligned_blob_group(img, min_area=5000, tol=10, pad=20)
                 if grp:
                     x0, y0, x1, y1 = grp
-                    print(f"   · Aligned blob group crop: {(x0, y0, x1, y1)}")
-                    crop_img       = img[max(0, y0 - 20):min(y1 + 20, h_img),
-                                         max(0, x0 - 20):min(x1 + 20, w_img)]
+                    print(f"    · Aligned blob group crop: {(x0, y0, x1, y1)}")
+                    crop_img = img[max(0, y0-20):min(y1+20, h_img), max(0, x0-20):min(x1+20, w_img)]
                 else:
-                    # 2c) Fallback: full-logo crop
                     y_crop = crop_full_logo(pdf_path, dpi=DPI)
                     if y_crop:
-                        print(f"   · Full-logo crop at y={y_crop}px")
+                        print(f"    · Full-logo crop at y={y_crop}px")
                         crop_img = img[:y_crop, :]
                     else:
-                        # 2d) Last-ditch: blob fallback
-                        blob_box = crop_blob_bbox(gray) or (0, 0, w_img, h_img)
-                        bx, by, bx2, by2 = blob_box
-                        print(f"   · Blob-fallback crop: {blob_box}")
-                        crop_img = img[max(0, by - 20):min(by2 + 20, h_img),
-                                       max(0, bx - 20):min(bx2 + 20, w_img)]
+                        h_img2, w_img2 = img.shape[:2]
+                        margin = int(0.01 * min(h_img2, w_img2))
+                        print("    · Full-page margin crop")
+                        crop_img = img[margin:h_img2-margin, margin:w_img2-margin]
 
-            # ─── 3) Save JPEG ───────────────────────────────────────────────────────
+            # ─── 4) Check multi-layer scenario ──────────────────────────────────────
+            if crop_img is None:
+                boxes = select_all_crop_candidates(img, template_sets, penalty_thresh=0.1)
+                if len(boxes) > 1:
+                    print("    · Legacy multi-layer detected → compositing layers…")
+                    layers = []
+                    for bx0, by0, bx1, by1 in boxes:
+                        region = img[by0:by1, bx0:bx1]
+                        color = extract_color_label(pdf_path, crop_y0=by0)
+                        layers.append(recolor_layer(region, COLOR_MAP[color]))
+                    base = layers[0]
+                    for layer in layers[1:]:
+                        alpha = layer[:, :, 3].astype(float) / 255.0
+                        for c in range(3):
+                            base[:, :, c] = layer[:, :, c] * alpha + base[:, :, c] * (1 - alpha)
+                    crop_img = cv2.cvtColor(base, cv2.COLOR_BGRA2BGR)
+
+            # ─── 5) Single best bracket crop if still None ─────────────────────────
+            if crop_img is None:
+                try:
+                    print("    · Bracket-template crop (final)…")
+                    x0, y0, x1, y1 = select_best_crop_box(img, template_sets)
+                    print(f"    · Bracket crop box: {(x0, y0, x1, y1)}")
+                    crop_img = img[y0:y1, x0:x1]
+                except RuntimeError:
+                    gray2 = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                    blob2 = crop_blob_bbox(gray2) or (0, 0, w_img, h_img)
+                    bx, by, bx2, by2 = blob2
+                    print(f"    · Blob-fallback crop: {blob2}")
+                    crop_img = img[max(0, by-20):min(by2+20, h_img), max(0, bx-20):min(bx2+20, w_img)]
+
+            # ─── 6) Save JPEG ───────────────────────────────────────────────────────
             jpg_name = f"{tms}.{original_part}.{seq}.jpg"
             out_jpg  = os.path.join(imgs_dir, jpg_name)
-            print(f"   · Writing JPEG → {out_jpg}")
+            print(f"    · Writing JPEG → {out_jpg}")
             cv2.imwrite(out_jpg, crop_img)
 
-            # ─── 4) Clean up PDF ───────────────────────────────────────────────────
-            print("   · Removing temp PDF")
+            # ─── 7) Clean up PDF ───────────────────────────────────────────────────
+            print("    · Removing temp PDF")
             os.remove(pdf_path)
             time.sleep(STEP_DELAY)
 
-            # ─── 5) Record row (dimensions already parsed) ─────────────────────────
-            vol    = h_in * w_in * THICKNESS_IN
-            wgt    = vol * MATERIAL_DENSITY
-            dimw   = vol / FACTOR
+            # ─── 8) Record row (dimensions already parsed) ──────────────────────────
+            vol  = h_in * w_in * THICKNESS_IN
+            wgt  = vol * MATERIAL_DENSITY
+            dimw = vol / FACTOR
+
             records.append({
-                'ITEM_ID':        original_part,
-                'ITEM_TYPE':      '',
-                'DESCRIPTION':    '',
-                'NET_LENGTH':     h_in,
-                'NET_WIDTH':      w_in,
-                'NET_HEIGHT':     THICKNESS_IN,
-                'NET_WEIGHT':     wgt,
-                'NET_VOLUME':     vol,
-                'NET_DIM_WGT':    dimw,
-                'DIM_UNIT':       'in',
-                'WGT_UNIT':       'lb',
-                'VOL_UNIT':       'in',
-                'FACTOR':         FACTOR,
-                'SITE_ID':        SITE_ID,
-                'TIME_STAMP':     ts,
-                'OPT_INFO_2':     'Y',
-                'OPT_INFO_3':     'N',
-                'OPT_INFO_8':     0,
+                'ITEM_ID':         original_part,
+                'ITEM_TYPE':       '',
+                'DESCRIPTION':     '',
+                'NET_LENGTH':      h_in,
+                'NET_WIDTH':       w_in,
+                'NET_HEIGHT':      THICKNESS_IN,
+                'NET_WEIGHT':      wgt,
+                'NET_VOLUME':      vol,
+                'NET_DIM_WGT':     dimw,
+                'DIM_UNIT':        'in',
+                'WGT_UNIT':        'lb',
+                'VOL_UNIT':        'in',
+                'FACTOR':          FACTOR,
+                'SITE_ID':         SITE_ID,
+                'TIME_STAMP':      ts,
+                'OPT_INFO_2':      'Y',
+                'OPT_INFO_3':      'N',
+                'OPT_INFO_8':      0,
                 'IMAGE_FILE_NAME': jpg_name,
-                'UPDATED':        'Y'
+                'UPDATED':         'Y'
             })
             print(f"[{i}] ✅ Done\n")
             time.sleep(STEP_DELAY)
-
-        except (WebDriverException, TimeoutException) as e:
-            print(f"[{i}] ❌ Locked out or error ({e}); closing browser and retrying…")
-            if driver:
-                driver.quit()
-            driver = None
-            # Re-attempt the same part after re-login
-            i -= 1  # decrement index to retry this iteration
-            continue
 
         except Exception as e:
             print(f"[{i}] ❌ ERROR: {e}")
@@ -1018,10 +990,11 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
             continue
 
     # ─── Tear down & write CSV ───────────────────────────────────────────────────
-    if driver:
+    try:
         driver.quit()
-    shutil.rmtree(tmp_dir)
-
+    except:
+        pass
+    shutil.rmtree(tmp_dir, ignore_errors=True)
     df_out = pd.DataFrame(records)
     cols = [
         'ITEM_ID','ITEM_TYPE','DESCRIPTION','NET_LENGTH','NET_WIDTH','NET_HEIGHT',
