@@ -143,9 +143,10 @@ def init_driver(download_dir, profile_dir=None, headless=False):
 
 def download_pdf_for_part(part, tmp_dir, driver, base_url):
     """
-    Search for part in the library.
-    - If “No data found” appears, or if no exact‐match row exists, return None.
+    Search for 'part' in the library, download its PDF into tmp_dir, and return the local path.
+    - If “No data found” appears, return None.
     - If the sign-in lightbox appears, raise to trigger safe_download retry.
+    - If no exact match <td> is found, return None (skip).
     - Otherwise download the PDF (inline URL or click+poll).
     """
     wait = WebDriverWait(driver, 20)
@@ -159,31 +160,26 @@ def download_pdf_for_part(part, tmp_dir, driver, base_url):
     fld.send_keys(clean)
     driver.find_element(By.ID, 'docLibContainer_search_button').click()
 
-    # ──────────────────────────────────────────────────────────────
-    # ── NEW BLOCK: as soon as the Search completes, check if an exact <td> exists ──
-    time.sleep(1)  # give the table 1 second to render results
-
-    # 1a) If “No data found” message is shown, bail immediately.
+    # 1a) Bail if “No data found”
+    time.sleep(1)
     if driver.find_elements(By.CSS_SELECTOR, 'div.a-IRR-noDataMsg'):
         return None
 
-    # 1b) If there is no <td> whose text exactly equals 'clean', bail immediately.
-    #     This prevents hanging on fuzzy/partial‐match results.
-    exact_cells = driver.find_elements(
-        By.XPATH,
-        f"//td[normalize-space(text())='{clean}']"
-    )
-    if not exact_cells:
-        # No row exactly matching the cleaned part# → skip
-        return None
-    # ──────────────────────────────────────────────────────────────
-
-    # 1c) detect locked‐out sign‐in lightbox
+    # 1b) Detect locked-out sign-in lightbox
     if driver.find_elements(By.CSS_SELECTOR, 'div.sign-in-box.ext-sign-in-box'):
+        # Only this exact condition triggers a restart
         raise WebDriverException("Session locked, need to re-login")
 
-    # 2) Click the row’s “Documents” button
-    td = exact_cells[0]
+    # 2) Try to click the row’s “Documents” button for an exact match.
+    #    If no exact <td> for 'clean' appears, bail out immediately.
+    try:
+        td = driver.find_element(
+            By.XPATH,
+            f"//td[normalize-space(text())='{clean}']"
+        )
+    except NoSuchElementException:
+        return None
+
     tr = td.find_element(By.XPATH, "./ancestor::tr")
     docs_btn = tr.find_element(By.XPATH, ".//button[contains(., 'Documents')]")
     docs_btn.click()
@@ -209,7 +205,7 @@ def download_pdf_for_part(part, tmp_dir, driver, base_url):
         driver.switch_to.default_content()
         return out_path
 
-    # 5) Fallback: click + poll for the PDF file if inline URL not found
+    # 5) Fallback: click + poll for the PDF file
     dl.click()
     driver.switch_to.default_content()
     return wait_for_pdf(tmp_dir, clean, timeout=DOWNLOAD_TIMEOUT)
@@ -230,17 +226,29 @@ def render_pdf_color_page(pdf_path, dpi=300):
         
 def find_union_of_ink_contours(img_color, min_area=2000, pad_pct=0.08):
     """
-    From a BGR image (300 dpi) of a PDF page, build a mask of any non-white pixels
-    (i.e. “ink” of any color). Find all contours whose area is ≥min_area, take their
-    union bounding box, and pad that box on all sides by pad_pct (fraction of box size).
-    Returns (x0, y0, x1, y1) or None.
+    From a BGR image (300 dpi) of a PDF page, build a mask of any non-white pixels (“ink”),
+    find all contours whose area is >= min_area, take their union bounding box,
+    and pad that box on all sides by pad_pct (fraction of box size) OUTWARDS.
+    Returns (x0, y0, x1, y1) or None if no contour of sufficient size is found.
+
+    - img_color: the full-resolution (300 dpi) BGR numpy array.
+    - min_area: ignore any contour smaller than this (in pixels^2). Default=2000.
+    - pad_pct: fraction of the union-box’s width/height to expand OUTWARDS on each side. Default=0.08 (8%).
     """
+    import cv2
+    import numpy as np
+
+    # 1) Build an “ink” mask = any pixel that isn’t nearly white.
     gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
     _, thresh = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
+    # Now 'thresh' is 255 at any location where grayscale < 250, and 0 at white.
+
+    # 2) Find all external contours on that mask
     cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not cnts:
         return None
 
+    # 3) Keep only contours whose area >= min_area
     big_boxes = []
     for c in cnts:
         area = cv2.contourArea(c)
@@ -252,13 +260,13 @@ def find_union_of_ink_contours(img_color, min_area=2000, pad_pct=0.08):
     if not big_boxes:
         return None
 
-    # Union of all bounding rects
+    # 4) Union all those bounding rects into one big box
     x0 = min(box[0] for box in big_boxes)
     y0 = min(box[1] for box in big_boxes)
     x1 = max(box[0] + box[2] for box in big_boxes)
     y1 = max(box[1] + box[3] for box in big_boxes)
 
-    # Pad by pad_pct (clamped to image)
+    # 5) Pad that union OUTWARDS by pad_pct in each direction, clamped to image edges
     img_h, img_w = img_color.shape[:2]
     rect_w = x1 - x0
     rect_h = y1 - y0
@@ -727,15 +735,12 @@ def wait_for_login(driver, timeout=300):
 def safe_download(part, tmp_dir, driver, base_url, profile):
     """
     Attempt to download PDF for `part`. On WebDriverException or locked-out lightbox,
-    fully quit Chrome, wait an increasing delay, re-initialize, wait for manual re-login,
-    then retry exactly this `part`.
-
-    Changes here:
-      • first wait = 60 s
-      • second (and all subsequent) wait = 120 s (never increases past 120 s)
+    fully quit Chrome, wait a fixed delay, re-initialize, wait for manual re-login,
+    then retry exactly this `part`. 
+    Returns (pdf_path, driver) once the PDF is downloaded, or (None, driver) if “No data found”.
     """
-    # ── Updated delays: first 60 sec, then 120 sec forever ──
-    delays = [60, 120]
+    # 1 minute on first locked-out / crash, then 2 minutes thereafter
+    delays = [60, 120]  # in seconds
     attempt = 0
 
     while True:
@@ -760,10 +765,10 @@ def safe_download(part, tmp_dir, driver, base_url, profile):
 
         except WebDriverException as e:
             msg = str(e)
-            # If it’s specifically the locked‐out sign-in box, treat as “need manual re-login”
+            # If locked-out lightbox is present → re-login scenario
             if "Session locked" in msg or "lightbox" in msg or "sign-in-box" in msg.lower():
                 wait_time = delays[min(attempt, len(delays)-1)]
-                print(f"    · Locked out ({msg}); closing browser and retrying in {wait_time}s…")
+                print(f"   · Locked out ({msg}); closing browser and retrying in {wait_time}s…")
                 try:
                     driver.quit()
                 except Exception:
@@ -773,24 +778,24 @@ def safe_download(part, tmp_dir, driver, base_url, profile):
 
                 time.sleep(wait_time)
 
-                # Now reopen a fresh browser and wait for manual re-login
+                # Now re-open a fresh browser and wait for the library page to load (manual login)
                 driver = init_driver(tmp_dir, profile_dir=profile, headless=False)
                 driver.get(base_url)
-                print("    · Waiting for library page to become available…")
+                print("   · Waiting for library page to become available…")
                 try:
                     WebDriverWait(driver, 300).until(
                         EC.presence_of_element_located((By.ID, 'docLibContainer_search_field'))
                     )
-                    print("    · Library page detected; resuming download for part:", part)
+                    print("   · Library page detected; resuming download for part:", part)
                 except TimeoutException:
-                    # If we never see the search field, we’ll loop again and retry
-                    print(f"    · Still locked out after {wait_time}s; will retry.")
+                    # If we never see the search field, try again on the next loop
+                    print(f"   · Still locked out after {wait_time}s; will retry.")
                     continue
 
             else:
-                # Some other WebDriverException (e.g. Chrome crash). Retry, but use the same 60/120 pattern.
+                # Some other WebDriverException (e.g. Chrome crash). Try again after a fixed delay.
                 wait_time = delays[min(attempt, len(delays)-1)]
-                print(f"    · WebDriverException ({msg}); closing browser and retrying in {wait_time}s…")
+                print(f"   · WebDriverException ({msg}); closing browser and retrying in {wait_time}s…")
                 try:
                     driver.quit()
                 except Exception:
@@ -803,10 +808,10 @@ def safe_download(part, tmp_dir, driver, base_url, profile):
         except TimeoutException as te:
             # Timeout waiting for PDF or for search field – treat similarly
             wait_time = delays[min(attempt, len(delays)-1)]
-            print(f"    · TimeoutException ({te}); closing browser and retrying in {wait_time}s…")
+            print(f"   · TimeoutException ({te}); closing browser and retrying in {wait_time}s…")
             try:
                 driver.quit()
-            except:
+            except Exception:
                 pass
             driver = None
             attempt += 1
@@ -972,144 +977,81 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
             h_in, w_in = parse_dimensions_from_pdf(pdf_path)
             expected_ar = (w_in / h_in) if (h_in and w_in) else None
             
-            # d)  Try the tightened‐up bracket‐template crop
-            print("   · Bracket‐template crop (dim‐guided)…")
-            try:
-                # 1) Detect four‐corner bracket
-                x0b, y0b, x1b, y1b = select_best_crop_box(
-                    img,
-                    template_sets,
-                    expected_ratio=expected_ar
-                )
-                bracket_rect = (x0b, y0b, x1b, y1b)
+            # d)  Try crop-mark / bracket-template / union-of-ink, in that order:
+            print("   · Attempting crop-mark → bracket → union-of-ink…")
 
-                # 2) Detect the (rounded) border via detect_enclosed_box()
-                gray_for_rect = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                enclosed_rect = detect_enclosed_box(gray_for_rect, min_area=5000)
+            gray_for_rect = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            enclosed_rect = detect_enclosed_box(gray_for_rect, min_area=5000)
 
-                if enclosed_rect:
-                    x0e, y0e, x1e, y1e = enclosed_rect
-                    # Check “Does any ink (anything < 250 gray) lie below y1e?”
-                    # If so, we want to switch to a union-of-ink crop (to grab that red text).
-                    gray_all = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                    _, thresh_all = cv2.threshold(gray_all, 250, 255, cv2.THRESH_BINARY_INV)
-                    # Any pixel in row > y1e means some ink is outside that border
-                    if np.any(thresh_all[y1e+1 : , :] > 0):
-                        # **Use union-of-ink** (with 8% padding), rather than enclosed_rect
-                        x0u, y0u, x1u, y1u = find_union_of_ink_contours(img, min_area=2000, pad_pct=0.08)
-                        if x0u is not None:
-                            print(f"   · Ink‐below‐border detected; switching to union‐of‐ink crop: {(x0u, y0u, x1u, y1u)}")
-                            use_rect = (x0u, y0u, x1u, y1u)
-                            use_enclosed = False  # we’re not using the “tight” enclosed rect
-                        else:
-                            # (if union‐of‐ink fails, just fall back to enclosed+8% padding)
-                            rect_w = x1e - x0e
-                            rect_h = y1e - y0e
-                            pad_x = int(rect_w * 0.08)
-                            pad_y = int(rect_h * 0.08)
-                            img_h, img_w = img.shape[:2]
-                            x0c = max(x0e - pad_x, 0)
-                            y0c = max(y0e - pad_y, 0)
-                            x1c = min(x1e + pad_x, img_w)
-                            y1c = min(y1e + pad_y, img_h)
-                            print(f"   · Union‐of‐ink failed; padding enclosed‐rect by 8% → {(x0c, y0c, x1c, y1c)}")
-                            use_rect = (x0c, y0c, x1c, y1c)
-                            use_enclosed = False
-                    else:
-                        # No ink below y1e ⇒ it’s “just a border,” so we stay with enclosed_rect
-                        # BUT we’ll pad that enclosed rect by 5 px on the inside,
-                        # then expand by 8% outside, so the black border remains visible:
-                        rect_w = x1e - x0e
-                        rect_h = y1e - y0e
-                        pad_x = int(rect_w * 0.08)
-                        pad_y = int(rect_h * 0.08)
-                        img_h, img_w = img.shape[:2]
-                        x0c = max(x0e - pad_x, 0)
-                        y0c = max(y0e - pad_y, 0)
-                        x1c = min(x1e + pad_x, img_w)
-                        y1c = min(y1e + pad_y, img_h)
-                        print(f"   · Using enclosed rectangle + 8% padding → {(x0c, y0c, x1c, y1c)}")
-                        use_rect = (x0c, y0c, x1c, y1c)
-                        use_enclosed = False
+            crop_img = None
 
-                else:
-                    # 3) No border found at all: fall back to “bracket_rect”
-                    use_rect = bracket_rect
-                    use_enclosed = False
+            # 1) If detect_enclosed_box() finds a rounded-corner border, expand it by 8%:
+            if enclosed_rect:
+                ex0, ey0, ex1, ey1 = enclosed_rect
+                rect_w = ex1 - ex0
+                rect_h = ey1 - ey0
 
-                # 4) Now we have use_rect = (x0_c, y0_c, x1_c, y1_c).  Crop that.
-                x0c, y0c, x1c, y1c = use_rect
-                # Clamp the top edge to the first‐ink row (y0_art) if we were using a bracket rect
-                if not use_enclosed:
-                    if abs(y0c - y0_art) > 20:
-                        y0c = y0_art
-                    else:
-                        y0c = min(y0c, y0_art + 20)
+                pad_x = int(rect_w * 0.08)  # 8% of width
+                pad_y = int(rect_h * 0.08)  # 8% of height
 
-                crop_img = img[y0c : y1c, x0c : x1c]
-                print(f"   · Final crop box: {(x0c, y0c, x1c, y1c)}")
+                x0c = max(ex0 - pad_x, 0)
+                y0c = max(ey0 - pad_y, 0)
+                x1c = min(ex1 + pad_x, w_img)
+                y1c = min(ey1 + pad_y, h_img)
 
-            except RuntimeError as e:
-                # …then the existing fallback chain kicks in (blobs, “full‐logo,” etc.)…
-                print(f"   · No valid bracket candidates ({e}); falling back…")
-                # (rest of fallback unchanged)
+                crop_img = img[y0c:y1c, x0c:x1c]
+                print(f"   · Using crop-mark + 8% pad: {(x0c, y0c, x1c, y1c)}")
 
+            else:
+                # 2) Fallback: try bracket-template detection
+                try:
+                    x0b, y0b, x1b, y1b = select_best_crop_box(
+                        img,
+                        template_sets,
+                        expected_ratio=expected_ar
+                    )
+                    b_w = x1b - x0b
+                    b_h = y1b - y0b
 
-                # e.1) Fallback #1: aligned‐blobs group
-                grp = find_aligned_blob_group(img, min_area=5000, tol=10, pad=20)
-                if grp:
-                    x0g, y0g, x1g, y1g = grp
-                    print(f"   · Aligned blob group crop: {grp}")
-                    crop_img = img[
-                        max(0, y0g - 20) : min(y1g + 20, h_img),
-                        max(0, x0g - 20) : min(x1g + 20, w_img)
-                    ]
+                    pad_x = int(b_w * 0.08)  # 8% of bracket width
+                    pad_y = int(b_h * 0.08)  # 8% of bracket height
 
-                else:
-                    # e.2) Fallback #2: enclosed rectangle
-                    gray_fb = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                    rect = detect_enclosed_box(gray_fb, min_area=5000)
-                    if rect:
-                        x0e2, y0e2, x1e2, y1e2 = rect
-                        print(f"   · Enclosed rectangle crop: {(x0e2, y0e2, x1e2, y1e2)}")
-                        crop_img = img[y0e2:y1e2, x0e2:x1e2]
+                    x0c = max(x0b - pad_x, 0)
+                    y0c = max(y0b - pad_y, 0)
+                    x1c = min(x1b + pad_x, w_img)
+                    y1c = min(y1b + pad_y, h_img)
+
+                    crop_img = img[y0c:y1c, x0c:x1c]
+                    print(f"   · Using bracket-crop + 8% pad: {(x0c, y0c, x1c, y1c)}")
+
+                except Exception as e:
+                    # 3) Bracket detection failed → union-of-ink contours
+                    print(f"   · Bracket detection failed ({e}); falling back to union-of-ink…")
+
+                    # Try “big ink” first
+                    rect_union = find_union_of_ink_contours(img, min_area=2000, pad_pct=0.08)
+
+                    if not rect_union:
+                        # If that failed, try “smaller ink” (area ≥ 500 px²)
+                        rect_union = find_union_of_ink_contours(img, min_area=500, pad_pct=0.08)
+
+                    if rect_union:
+                        ux0, uy0, ux1, uy1 = rect_union
+
+                        # Clamp the top edge to y0_art so we don’t pull in too much blank above:
+                        uy0_clamped = max(uy0, y0_art)
+
+                        crop_img = img[uy0_clamped:uy1, ux0:ux1]
+                        print(f"   · Using union-of-ink + clamp-top: {(ux0, uy0_clamped, ux1, uy1)}")
 
                     else:
-                        # e.3) Fallback #3: “Full‐logo” via “…mm” line
-                        y_crop = crop_full_logo(pdf_path, dpi=DPI)
-                        if y_crop:
-                            print(f"   · Full‐logo crop at y={y_crop}px")
-                            crop_img = img[:y_crop, :]
-
-                        else:
-                            # e.4) Fallback #4: blob bbox if AR matches
-                            gray_blob = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                            blob_box = crop_blob_bbox(gray_blob) or (0, 0, w_img, h_img)
-                            bx, by, bx2, by2 = blob_box
-                            blob_w = bx2 - bx
-                            blob_h = by2 - by
-                            blob_ar = (blob_w / float(blob_h)) if (blob_h > 0) else 0
-
-                            if expected_ar and abs(blob_ar - expected_ar) / expected_ar < 0.10:
-                                print(f"   · Blob bbox fallback (AR≈{blob_ar:.2f} ~ {expected_ar:.2f})")
-                                crop_img = img[by:by2, bx:bx2]
-
-                            else:
-                                # ── e.5) Final fallback: union of all ink contours (including red text) ──
-                                print("   · No blob-bbox/AR match; attempting union of ALL ink contours…")
-                                rect_union = find_union_of_ink_contours(img, min_area=2000, pad_pct=0.08)
-                                if rect_union:
-                                    x0u, y0u, x1u, y1u = rect_union
-                                    print(f"   · Union-of-ink-contours crop: {(x0u, y0u, x1u, y1u)}")
-                                    crop_img = img[y0u:y1u, x0u:x1u]
-                                else:
-                                    # If *that* also fails (no ink at all), do a 1% full-page margin crop
-                                    margin = int(0.01 * min(h_img, w_img))
-                                    print("   · Union-of-ink failed; doing full-page margin crop")
-                                    crop_img = img[
-                                        margin : h_img - margin,
-                                        margin : w_img - margin
-                                    ]
+                        # 4) Union-of-ink failed entirely → 1% full-page margin crop
+                        margin = int(0.01 * min(h_img, w_img))
+                        crop_img = img[
+                            margin : h_img - margin,
+                            margin : w_img - margin
+                        ]
+                        print("   · Union-of-ink failed; using full-page margin crop")
             
             # f)  Save the final crop
             jpg_name = f"{tms}.{original_part}.{seq}.jpg"
