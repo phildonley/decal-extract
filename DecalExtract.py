@@ -336,7 +336,7 @@ def rect_intersection(a, b):
 
 def detect_best_crop(img_color, template_sets):
     """
-    Try each template-set; score by how much of the main blob
+    Try each template-set; score by how much of the  blob
     sits inside the resulting crop. Return the best (x0,y0,x1,y1).
     """
     gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
@@ -898,52 +898,83 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
             h_in, w_in = parse_dimensions_from_pdf(pdf_path)
             expected_ar = (w_in / h_in) if (h_in and w_in) else None
             
-            # d)  Try the tightened‐up bracket-template crop
+            # d)  Try the tightened-up bracket-template crop
             print("   · Bracket-template crop (dim-guided)…")
             try:
-                x0b, y0b, x1b, y1b = select_best_crop_box(img, template_sets, expected_ratio=expected_ar)
-                # clamp y0 so that if bracket detection lies too far down, we use y0_art instead
+                x0b, y0b, x1b, y1b = select_best_crop_box(
+                    img,
+                    template_sets,
+                    expected_ratio=expected_ar
+                )
+
+                # Clamp y0 so that if bracket detection lies too far down, use y0_art instead
                 if abs(y0b - y0_art) > 20:
                     y0c = y0_art
                 else:
                     y0c = min(y0b, y0_art + 20)
-            
+
                 crop_img = img[y0c:y1b, x0b:x1b]
-                print(f"   · Bracket crop box: {(x0b, y0c, x1b, y1b)}  (used dim & clamp)")
+                print(f"   · Bracket crop box: {(x0b, y0c, x1b, y1b)}")
+
             except RuntimeError as e:
-                # “no valid crop candidates found” OR all got dropped by stricter AR check
+                # “No valid crop candidates found” or all dropped by AR check
                 print(f"   · No valid bracket candidates ({e}); falling back…")
-            
+
                 # e.1) Fallback #1: find two aligned blobs (multi-blob group)
-                grp = find_aligned_blob_group(img, min_area=5000, tol=10, pad=20)
+                grp = find_aligned_blob_group(
+                    img,
+                    min_area=5000,
+                    tol=10,
+                    pad=20
+                )
                 if grp:
                     x0g, y0g, x1g, y1g = grp
                     print(f"   · Aligned blob group crop: {grp}")
-                    crop_img = img[max(0,y0g-20):min(y1g+20,h_img),
-                                   max(0,x0g-20):min(x1g+20,w_img)]
+                    crop_img = img[
+                        max(0, y0g - 20): min(y1g + 20, h_img),
+                        max(0, x0g - 20): min(x1g + 20, w_img)
+                    ]
+
                 else:
-                    # e.2) Fallback #2: “Full-logo” via “…mm” line
-                    y_crop = crop_full_logo(pdf_path, dpi=DPI)
-                    if y_crop:
-                        print(f"   · Full-logo crop at y={y_crop}px")
-                        crop_img = img[:y_crop, :]
+                    # e.2) Fallback #2: check for an enclosed rectangle (the black border)
+                    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                    rect = detect_enclosed_box(
+                        gray,
+                        min_area=5000,
+                        epsilon_frac=0.02
+                    )
+                    if rect:
+                        x0e, y0e, x1e, y1e = rect
+                        print(f"   · Enclosed rectangle crop: {(x0e, y0e, x1e, y1e)}")
+                        crop_img = img[y0e:y1e, x0e:x1e]
+
                     else:
-                        # e.3) Fallback #3: use the blob bounding box if it matches the AR within 10%
-                        blob_box = crop_blob_bbox(gray) or (0,0,w_img,h_img)
-                        bx, by, bx2, by2 = blob_box
-                        blob_w = bx2 - bx
-                        blob_h = by2 - by
-                        blob_ar = (blob_w / float(blob_h)) if (blob_h > 0) else 0
-            
-                        # If AR close to expected AR, trust it:
-                        if expected_ar and abs(blob_ar - expected_ar)/expected_ar < 0.10:
-                            print(f"   · Blob bbox fallback (AR≈{blob_ar:.2f} close to {expected_ar:.2f})")
-                            crop_img = img[by:by2, bx:bx2]
+                        # e.3) Fallback #3: “Full-logo” via “…mm” line
+                        y_crop = crop_full_logo(pdf_path, dpi=DPI)
+                        if y_crop:
+                            print(f"   · Full-logo crop at y={y_crop}px")
+                            crop_img = img[:y_crop, :]
+
                         else:
-                            # final fallback: full page margin
-                            margin = int(0.01 * min(h_img, w_img))
-                            print("   · Full-page margin crop")
-                            crop_img = img[margin:h_img-margin, margin:w_img-margin]
+                            # e.4) Fallback #4: use blob bounding box if AR matches within 10%
+                            blob_box = crop_blob_bbox(gray) or (0, 0, w_img, h_img)
+                            bx, by, bx2, by2 = blob_box
+                            blob_w = bx2 - bx
+                            blob_h = by2 - by
+                            blob_ar = (blob_w / float(blob_h)) if (blob_h > 0) else 0
+
+                            if expected_ar and abs(blob_ar - expected_ar) / expected_ar < 0.10:
+                                print(f"   · Blob bbox fallback (AR≈{blob_ar:.2f} ~= {expected_ar:.2f})")
+                                crop_img = img[by:by2, bx:bx2]
+
+                            else:
+                                # e.5) Final fallback: full-page margin crop
+                                margin = int(0.01 * min(h_img, w_img))
+                                print("   · Full-page margin crop")
+                                crop_img = img[
+                                    margin: h_img - margin,
+                                    margin: w_img - margin
+                                ]
             
             # f)  Save the final crop
             jpg_name = f"{tms}.{original_part}.{seq}.jpg"
