@@ -1053,16 +1053,16 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
             h_in, w_in = parse_dimensions_from_pdf(pdf_path)
             expected_ar = (w_in / h_in) if (h_in and w_in) else None
 
-            # d)  Attempt: crop‐mark ⇒ bracket ⇒ union‐of‐all‐ink (with 5% padding)
+            # d)  Attempt crop‐mark → bracket → union‐of‐all‐ink (with 5% padding)
             print("   · Attempting crop‐mark → bracket → union‐of‐all‐ink…")
 
-            # Prepare grayscale for crop‐mark detection
+            # Prepare grayscale for crop‐mark detection:
             gray_for_rect = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             enclosed_rect = detect_enclosed_box(gray_for_rect, min_area=5000)
 
             crop_img = None
 
-            # 1) If we found a rounded‐corner border, expand it uniformly by 5% of the smaller side
+            # 1) If we found a rounded‐corner border, expand it uniformly by 5% of the smaller side:
             if enclosed_rect:
                 ex0, ey0, ex1, ey1 = enclosed_rect
                 rect_w = ex1 - ex0
@@ -1101,16 +1101,17 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
                     crop_img = img[y0c:y1c, x0c:x1c]
                     print(f"   · Using bracket‐crop + 5% pad: {(x0c, y0c, x1c, y1c)}")
 
+                    print("   · Bracket‐template crop (dim‐guided)…")
+
                 except RuntimeError as e:
-                # ── NEW FALLBACK SEQUENCE STARTS HERE ──
+                    # ── NEW FALLBACK SEQUENCE STARTS HERE ──
                     print(f"   · No valid bracket candidates ({e}); falling back…")
 
-                    # 1) Fallback #1: aligned‐blobs group (if at least two blobs share a common baseline)
+                    # 1) Fallback #1: aligned‐blobs group (if ≥2 components share a common baseline)
                     grp = find_aligned_blob_group(img, min_area=5000, tol=10, pad=20)
                     if grp:
                         x0g, y0g, x1g, y1g = grp
                         print(f"   · Aligned blob group crop: {grp}")
-                        # Crop an extra 20px inside image bounds
                         crop_img = img[
                             max(0, y0g - 20) : min(y1g + 20, h_img),
                             max(0, x0g - 20) : min(x1g + 20, w_img)
@@ -1187,59 +1188,58 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
                                     crop_img = img[y0p:y1p, x0p:x1p]
 
                                 else:
-                                    # 5) Fallback #5: as a last resort, a 1% full‐page margin crop
+                                    # 5) Fallback #5: final “safe” crop = 1% full‐page margin
                                     margin = int(0.01 * min(h_img, w_img))
                                     print("   · No sufficient ink; doing full-page margin crop")
                                     crop_img = img[
                                         margin : h_img - margin,
                                         margin : w_img - margin
                                     ]
+                # ── At this point, `crop_img` is set (either by “using crop‐mark,” “bracket,” or one of the fallbacks) ──
 
-                    # ── At this point, `crop_img` has been assigned by either the “aligned blobs” fallback,
-                    #     or by “enclosed rectangle”, or by “full-logo via mm”, or by our new “grouped ink” logic,
-                    #     or by the final 1%‐margin fallback.
-                    print(f"   · Final crop size: {crop_img.shape[1]}×{crop_img.shape[0]} (w×h)")
+            # e)  Print final crop size, save JPEG, clean up, and record:
+            print(f"   · Final crop size: {crop_img.shape[1]}×{crop_img.shape[0]} (w×h)")
 
-                    # f)  Save the final crop as JPEG
-                    jpg_name = f"{tms}.{original_part}.{seq}.jpg"
-                    out_jpg = os.path.join(imgs_dir, jpg_name)
-                    print(f"   · Writing JPEG → {out_jpg}")
-                    cv2.imwrite(out_jpg, crop_img)
+            # f)  Save the final crop as a JPEG
+            jpg_name = f"{tms}.{original_part}.{seq}.jpg"
+            out_jpg = os.path.join(imgs_dir, jpg_name)
+            print(f"   · Writing JPEG → {out_jpg}")
+            cv2.imwrite(out_jpg, crop_img)
 
-                    # g)  Clean up
-                    print("   · Removing temp PDF")
-                    os.remove(pdf_path)
-                    time.sleep(STEP_DELAY)
+            # g)  Clean up the temporary PDF
+            print("   · Removing temp PDF")
+            os.remove(pdf_path)
+            time.sleep(STEP_DELAY)
 
-                    # ─── 8) Record row (dimensions already parsed) ──────────────────────────
-                    vol  = h_in * w_in * THICKNESS_IN
-                    wgt  = vol * MATERIAL_DENSITY
-                    dimw = vol / FACTOR
+            # ─── 8) Record row (dimensions already parsed) ──────────────────────────
+            vol  = h_in * w_in * THICKNESS_IN
+            wgt  = vol * MATERIAL_DENSITY
+            dimw = vol / FACTOR
 
-                    records.append({
-                        'ITEM_ID':         original_part,
-                        'ITEM_TYPE':       '',
-                        'DESCRIPTION':     '',
-                        'NET_LENGTH':      h_in,
-                        'NET_WIDTH':       w_in,
-                        'NET_HEIGHT':      THICKNESS_IN,
-                        'NET_WEIGHT':      wgt,
-                        'NET_VOLUME':      vol,
-                        'NET_DIM_WGT':     dimw,
-                        'DIM_UNIT':        'in',
-                        'WGT_UNIT':        'lb',
-                        'VOL_UNIT':        'in',
-                        'FACTOR':          FACTOR,
-                        'SITE_ID':         SITE_ID,
-                        'TIME_STAMP':      ts,
-                        'OPT_INFO_2':      'Y',
-                        'OPT_INFO_3':      'N',
-                        'OPT_INFO_8':      0,
-                        'IMAGE_FILE_NAME': jpg_name,
-                        'UPDATED':         'Y'
-                    })
-                    print(f"[{i}] ✅ Done\n")
-                    time.sleep(STEP_DELAY)
+            records.append({
+                'ITEM_ID':         original_part,
+                'ITEM_TYPE':       '',
+                'DESCRIPTION':     '',
+                'NET_LENGTH':      h_in,
+                'NET_WIDTH':       w_in,
+                'NET_HEIGHT':      THICKNESS_IN,
+                'NET_WEIGHT':      wgt,
+                'NET_VOLUME':      vol,
+                'NET_DIM_WGT':     dimw,
+                'DIM_UNIT':        'in',
+                'WGT_UNIT':        'lb',
+                'VOL_UNIT':        'in',
+                'FACTOR':          FACTOR,
+                'SITE_ID':         SITE_ID,
+                'TIME_STAMP':      ts,
+                'OPT_INFO_2':      'Y',
+                'OPT_INFO_3':      'N',
+                'OPT_INFO_8':      0,
+                'IMAGE_FILE_NAME': jpg_name,
+                'UPDATED':         'Y'
+            })
+            print(f"[{i}] ✅ Done\n")
+            time.sleep(STEP_DELAY)
 
         except Exception as e:
             print(f"[{i}] ❌ ERROR: {e}")
