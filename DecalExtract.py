@@ -224,50 +224,65 @@ def render_pdf_color_page(pdf_path, dpi=300):
     else:
         return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
         
-def find_union_of_ink_contours(img_color, min_area=500, pad_pct=0.05):
+def find_union_of_ink_contours(img_color, min_area=500, pad_pct=0.05, dbg_dir=None, dbg_name=None):
     """
-    From a BGR image (300 dpi) of a PDF page, build a mask of any non-white pixels (“ink”),
-    find all contours whose area is >= min_area, take their union bounding box,
-    and pad that box on all sides by pad_pct (fraction of box size) OUTWARDS.
-    Returns (x0, y0, x1, y1) or None if no contour of sufficient size is found.
+    Instrumented “union of all ink” fallback.  Detect every non-white contour ≥ min_area,
+    print out its area and bounding box, then union them all and pad by pad_pct.
 
-    - img_color: the full-resolution (300 dpi) BGR numpy array.
-    - min_area: ignore any contour smaller than this (in pixels^2). Default=500.
-                (Lowered from 2000 so that moderately-sized logo pieces are not discarded.)
-    - pad_pct: fraction of the union-box’s width/height to expand OUTWARDS on each side.
-               Default=0.05 (5%).
+    Parameters:
+    - img_color : np.ndarray (BGR) of the full-page image
+    - min_area   : int  → discard any contour whose area < this (default 500)
+    - pad_pct    : float→ pad the final union-outwards by pad_pct * (width/height)
+    - dbg_dir    : str  → (optional) path to your debugging folder (e.g. 'debugging')
+    - dbg_name   : str  → (optional) base filename for the debug image (e.g. 'part1234')
+
+    Returns:
+    - (x0p, y0p, x1p, y1p) or None
     """
+
     import cv2
     import numpy as np
+    import os
 
-    # 1) Build an “ink” mask = any pixel that isn’t nearly white.
+    # 0) Prepare gray + threshold mask (inverse: ink = white=255, background=0)
     gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
     _, thresh = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
-    # Now 'thresh' is 255 at any location where grayscale < 250, and 0 at white.
 
-    # 2) Find all external contours on that mask
+    # 1) Find all external contours on that mask
     cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    total_cnts = len(cnts)
+    print(f"      · [DEBUG] find_union_of_ink_contours: found {total_cnts} total contours")
+
     if not cnts:
+        print("         → No contours found at all.")
         return None
 
-    # 3) Keep only contours whose area >= min_area
+    # 2) Keep only contours whose area >= min_area
     big_boxes = []
-    for c in cnts:
+    for idx, c in enumerate(cnts):
         area = cv2.contourArea(c)
-        if area < min_area:
-            continue
         x, y, w, h = cv2.boundingRect(c)
+
+        print(f"         → Contour #{idx}: area={area:.0f}, bbox=({x},{y},{w},{h})")
+        if area < min_area:
+            print(f"            (discarded, area < {min_area})")
+            continue
+
+        print(f"            (accepted)")
         big_boxes.append((x, y, w, h))
+
     if not big_boxes:
+        print(f"      · [DEBUG] No contours ≥ min_area({min_area}) → return None")
         return None
 
-    # 4) Union all those bounding rects into one big box
+    # 3) Union all those bounding rects into one big box
     x0 = min(box[0] for box in big_boxes)
     y0 = min(box[1] for box in big_boxes)
     x1 = max(box[0] + box[2] for box in big_boxes)
     y1 = max(box[1] + box[3] for box in big_boxes)
+    print(f"      · [DEBUG] Union of accepted boxes = ({x0}, {y0}, {x1}, {y1}) before padding")
 
-    # 5) Pad that union OUTWARDS by pad_pct in each direction, clamped to image edges
+    # 4) Pad that union OUTWARDS by pad_pct in each direction
     img_h, img_w = img_color.shape[:2]
     rect_w = x1 - x0
     rect_h = y1 - y0
@@ -278,9 +293,36 @@ def find_union_of_ink_contours(img_color, min_area=500, pad_pct=0.05):
     y0p = max(y0 - pad_y, 0)
     x1p = min(x1 + pad_x, img_w)
     y1p = min(y1 + pad_y, img_h)
+    print(f"      · [DEBUG] After pad_pct={pad_pct*100:.0f}%, padded box = ({x0p}, {y0p}, {x1p}, {y1p})")
 
     if x1p <= x0p or y1p <= y0p:
+        print("      · [DEBUG] Invalid padded box (zero or negative area). Returning None.")
         return None
+
+    # 5) (Optional) Write a debug image showing each accepted box in GREEN
+    #    and the final padded union in RED.  Uncomment if you want to save it.
+    if dbg_dir and dbg_name:
+        try:
+            debug_vis = img_color.copy()
+            # draw each accepted box in GREEN:
+            for (bx, by, bw, bh) in big_boxes:
+                cv2.rectangle(debug_vis,
+                              (bx, by),
+                              (bx + bw, by + bh),
+                              (0, 255, 0), 2)
+
+            # draw the final padded union in RED:
+            cv2.rectangle(debug_vis,
+                          (x0p, y0p),
+                          (x1p, y1p),
+                          (0, 0, 255), 3)
+
+            os.makedirs(dbg_dir, exist_ok=True)
+            dbg_path = os.path.join(dbg_dir, f"{dbg_name}_union_debug.png")
+            cv2.imwrite(dbg_path, debug_vis)
+            print(f"      · [DEBUG] Wrote debug image → {dbg_path}")
+        except Exception as ex:
+            print(f"      · [DEBUG] Failed to write debug image: {ex}")
 
     return (x0p, y0p, x1p, y1p)
 
@@ -924,7 +966,73 @@ def _wait_for_library_or_lock(driver, poll_interval=5):
 
         # 3) Otherwise, sleep and try again.
         time.sleep(poll_interval)
-        
+
+def find_horizontal_aligned_union(img_color, min_area=2000, tol=250, pad_pct=0.05, min_ratio=0.5):
+    """
+    Group only those “big” contours (area ≥ min_area) whose vertical centers
+    lie within `tol` pixels of the largest contour’s center AND whose aspect
+    ratio (width/height) ≥ min_ratio.  Then return the union of those bounding
+    boxes, padded by pad_pct.  If no suitable contour ≥ min_area is found, return None.
+    """
+
+    gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
+    _, thresh = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
+    cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    # 1) Collect all contours with area >= min_area
+    big = []
+    for c in cnts:
+        area = cv2.contourArea(c)
+        if area < min_area:
+            continue
+        x, y, w, h = cv2.boundingRect(c)
+        cy = y + (h / 2)
+        ratio = float(w) / float(h) if h > 0 else 0.0
+        big.append({'bbox': (x, y, x + w, y + h), 'area': area, 'cy': cy, 'ratio': ratio})
+
+    if not big:
+        return None
+
+    # 2) Find the single largest contour (“main blob”)
+    main = max(big, key=lambda b: b['area'])
+    cy_main = main['cy']
+
+    # 3) Always include the main blob.  Then group any other ‘big’ contour whose
+    #    vertical center is within tol AND whose aspect ratio >= min_ratio.
+    group = [main]
+    for entry in big:
+        if entry is main:
+            continue
+        if abs(entry['cy'] - cy_main) <= tol and entry['ratio'] >= min_ratio:
+            group.append(entry)
+
+    # 4) Compute union of all bounding boxes in that group
+    xs = []
+    ys = []
+    for entry in group:
+        x0_, y0_, x1_, y1_ = entry['bbox']
+        xs.extend([x0_, x1_])
+        ys.extend([y0_, y1_])
+
+    x0u = min(xs)
+    y0u = min(ys)
+    x1u = max(xs)
+    y1u = max(ys)
+
+    # 5) Pad the union‐box by pad_pct on all sides (clamp to image edges)
+    h_img, w_img = img_color.shape[:2]
+    rect_w = x1u - x0u
+    rect_h = y1u - y0u
+    pad_x = int(rect_w * pad_pct)
+    pad_y = int(rect_h * pad_pct)
+
+    x0p = max(x0u - pad_x, 0)
+    y0p = max(y0u - pad_y, 0)
+    x1p = min(x1u + pad_x, w_img)
+    y1p = min(y1u + pad_y, h_img)
+
+    return (x0p, y0p, x1p, y1p)
+    
 def find_grouped_union_of_ink_contours(img_color, min_area=500, pad_pct=0.05, proximity_px=50):
     """
     1) Threshold `img_color` so that any pixel <250→foreground (ink).
@@ -1168,119 +1276,169 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
             expected_ar = (w_in / h_in) if (h_in and w_in) else None
 
             # d)  Attempt crop‐mark → bracket → union‐of‐all‐ink (with 5% padding)
-            print("   · Attempting crop‐mark → bracket → union‐of‐all‐ink…")
+            print("   · Attempting crop-mark → bracket → union-of-all-ink…")
 
             # Prepare grayscale for crop‐mark detection:
             gray_for_rect = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             enclosed_rect = detect_enclosed_box(gray_for_rect, min_area=5000)
 
+            # If the detected “enclosed rectangle” starts below 20% of image height, ignore it:
+            if enclosed_rect:
+                ex0, ey0, ex1, ey1 = enclosed_rect
+                if ey0 > int(0.20 * h_img):
+                    print(f"   · Ignoring small crop-mark at y={ey0} (too low); falling back…")
+                    enclosed_rect = None
+
             crop_img = None
 
-            # 1) If we found a rounded‐corner border, expand it uniformly by 5% of the smaller side:
+            # 1) If we still have a valid enclosed_rect, expand it by 5% on all sides
             if enclosed_rect:
                 ex0, ey0, ex1, ey1 = enclosed_rect
                 rect_w = ex1 - ex0
                 rect_h = ey1 - ey0
 
-                # 5% of the smaller dimension → uniform padding on all sides
                 pad = int(min(rect_w, rect_h) * 0.05)
-
                 x0c = max(ex0 - pad, 0)
                 y0c = max(ey0 - pad, 0)
                 x1c = min(ex1 + pad, w_img)
                 y1c = min(ey1 + pad, h_img)
 
                 crop_img = img[y0c:y1c, x0c:x1c]
-                print(f"   · Using crop‐mark + 5% pad: {(x0c, y0c, x1c, y1c)}")
+                print(f"   · Using crop-mark + 5% pad: {(x0c, y0c, x1c, y1c)}")
 
             else:
                 # 2) Fallback #1: try bracket‐template detection
                 try:
+                    # (a) Run corner‐based bracket detection exactly as before:
                     x0b, y0b, x1b, y1b = select_best_crop_box(
                         img,
                         template_sets,
                         expected_ratio=expected_ar
                     )
-                    b_w = x1b - x0b
-                    b_h = y1b - y0b
+                    bracket_rect = (x0b, y0b, x1b, y1b)
 
-                    # 5% of the smaller dimension → uniform padding on all sides
-                    pad = int(min(b_w, b_h) * 0.05)
+                    # (b) Re-detect the rounded border (if any) for overlap check:
+                    gray_for_rect_2 = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                    enclosed_rect_2 = detect_enclosed_box(gray_for_rect_2, min_area=5000)
 
-                    x0c = max(x0b - pad, 0)
-                    y0c = max(y0b - pad, 0)
-                    x1c = min(x1b + pad, w_img)
-                    y1c = min(y1b + pad, h_img)
+                    # (c) Decide if bracket_rect “covers” 90% of that border:
+                    use_enclosed = False
+                    if enclosed_rect_2:
+                        x0e2, y0e2, x1e2, y1e2 = enclosed_rect_2
+                        enclosed_area = (x1e2 - x0e2) * (y1e2 - y0e2)
 
+                        # Intersection between bracket_rect and enclosed_rect_2
+                        ix0 = max(x0b, x0e2)
+                        iy0 = max(y0b, y0e2)
+                        ix1 = min(x1b, x1e2)
+                        iy1 = min(y1b, y1e2)
+
+                        inter_area = 0
+                        if ix1 > ix0 and iy1 > iy0:
+                            inter_area = (ix1 - ix0) * (iy1 - iy0)
+
+                        # If bracket misses >10% of that border, swap to enclosed_rect_2
+                        if enclosed_area > 0 and (inter_area / float(enclosed_area)) < 0.90:
+                            print("   · Bracket detection unreliable (low overlap); swapping to enclosed rectangle")
+                            use_rect = enclosed_rect_2
+                            use_enclosed = True
+                        else:
+                            use_rect = bracket_rect
+                    else:
+                        # No border detected → just use bracket_rect
+                        use_rect = bracket_rect
+
+                    # (d) Compute final crop box:
+                    if use_enclosed:
+                        ex0u, ey0u, ex1u, ey1u = use_rect
+                        rect_w2 = ex1u - ex0u
+                        rect_h2 = ey1u - ey0u
+                        pad2 = int(min(rect_w2, rect_h2) * 0.05)
+
+                        x0c = max(ex0u - pad2, 0)
+                        y0c = max(ey0u - pad2, 0)
+                        x1c = min(ex1u + pad2, w_img)
+                        y1c = min(ey1u + pad2, h_img)
+
+                    else:
+                        # “Tight” bracket-based crop, but clamp top edge near y0_art
+                        x0b2, y0b2, x1b2, y1b2 = use_rect
+
+                        if abs(y0b2 - y0_art) > 20:
+                            y0c = y0_art
+                        else:
+                            y0c = min(y0b2, y0_art + 20)
+
+                        x0c = x0b2
+                        x1c = x1b2
+                        y1c = y1b2
+
+                        # Clamp into image bounds
+                        x0c = max(x0c, 0)
+                        y0c = max(y0c, 0)
+                        x1c = min(x1c, w_img)
+                        y1c = min(y1c, h_img)
+
+                    # (e) Crop that result
                     crop_img = img[y0c:y1c, x0c:x1c]
-                    print(f"   · Using bracket‐crop + 5% pad: {(x0c, y0c, x1c, y1c)}")
-
-                    print("   · Bracket‐template crop (dim‐guided)…")
+                    print(f"   · Final crop box (corner-template): {(x0c, y0c, x1c, y1c)}")
 
                 except RuntimeError as e:
                     # ── FALLBACK SEQUENCE STARTS HERE ──
                     print(f"   · No valid bracket candidates ({e}); falling back…")
 
-                    # 1) Fallback #1: aligned-blobs group (if at least two blobs share a common baseline)
-                    grp = find_aligned_blob_group(img, min_area=5000, tol=10, pad=20)
-                    if grp:
-                        x0g, y0g, x1g, y1g = grp
-                        print(f"   · Aligned blob group crop: {grp}")
-                        # Crop 20px extra inside image bounds
-                        crop_img = img[
-                            max(0, y0g - 20) : min(y1g + 20, h_img),
-                            max(0, x0g - 20) : min(x1g + 20, w_img)
-                        ]
+                    # Fallback #2: try enclosed rectangle again (ignore if too low)
+                    gray_fb = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                    rect2 = detect_enclosed_box(gray_fb, min_area=5000)
 
-                    else:
-                        # 2) Fallback #2: enclosed rectangle (rounded border)
-                        gray_fb = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                        rect2 = detect_enclosed_box(gray_fb, min_area=5000)
-                        if rect2:
-                            x0e2, y0e2, x1e2, y1e2 = rect2
+                    if rect2:
+                        x0e2, y0e2, x1e2, y1e2 = rect2
+                        if y0e2 > int(0.20 * h_img):
+                            print(f"   · Ignoring enclosed rect at y={y0e2} (too low); moving on to union-of-ink…")
+                            rect2 = None
+                        else:
                             print(f"   · Enclosed rectangle crop: {(x0e2, y0e2, x1e2, y1e2)}")
                             crop_img = img[y0e2:y1e2, x0e2:x1e2]
 
+                    if rect2 is None:
+                        # Fallback #3: horizontal‐aligned union of ink contours
+                        print("   · No valid enclosed rectangle; attempting horizontal-aligned union of ink contours…")
+                        rect_union = find_horizontal_aligned_union(
+                            img,
+                            min_area=2000,
+                            tol=250,
+                            pad_pct=0.05,
+                            min_ratio=0.5
+                        )
+                        if rect_union:
+                            x0u, y0u, x1u, y1u = rect_union
+                            print(f"   · Aligned union-of-ink crop: {(x0u, y0u, x1u, y1u)}")
+                            crop_img = img[y0u:y1u, x0u:x1u]
                         else:
-                            # 3) Fallback #3: “Full-logo” via “…mm” line (top-portion crop)
-                            y_crop = crop_full_logo(pdf_path, dpi=DPI)
-                            if y_crop:
-                                print(f"   · Full-logo crop at y={y_crop}px")
-                                crop_img = img[:y_crop, :]
+                            # Fallback #4: final “safe” crop = 1% full‐page margin
+                            margin = int(0.01 * min(h_img, w_img))
+                            print("   · Aligned union failed; doing 1% full-page margin crop")
+                            crop_img = img[
+                                margin : h_img - margin,
+                                margin : w_img - margin
+                            ]
+                    # ── FALLBACK SEQUENCE ENDS HERE ──
 
-                            else:
-                                # 4) Fallback #4: UNION-OF-INK-CONTOURS (catch disconnected pieces)
-                                print("   · No enclosed rectangle; attempting union of ALL ink contours…")
-                                # Call our new union-all-contours function (min_area=500, pad_pct=0.05):
-                                rect_union = find_union_of_ink_contours(
-                                    img,
-                                    min_area=500,
-                                    pad_pct=0.05
-                                )
-                                if rect_union:
-                                    x0u, y0u, x1u, y1u = rect_union
-                                    print(f"   · Union-of-ink-contours crop: {(x0u, y0u, x1u, y1u)}")
-                                    crop_img = img[y0u : y1u, x0u : x1u]
-                                else:
-                                    # 5) Fallback #5: as a last resort, do a 1% full-page margin crop
-                                    margin = int(0.01 * min(h_img, w_img))
-                                    print("   · Union-of-ink failed; doing full-page margin crop")
-                                    crop_img = img[
-                                        margin : h_img - margin,
-                                        margin : w_img - margin
-                                    ]
-                # ── At this point, `crop_img` is set (either by “using crop‐mark,” “bracket,” or one of the fallbacks) ──
-
-            # e)  Print final crop size, save JPEG, clean up, and record:
+            # ── At this point, `crop_img` is guaranteed to exist from one of:
+            #    • crop-mark + pad
+            #    • bracket-template ± clamp
+            #    • enclosed rectangle (if high enough)
+            #    • horizontal-aligned union-of-ink (09.4618.1621 case)
+            #    • 1% full-page margin
             print(f"   · Final crop size: {crop_img.shape[1]}×{crop_img.shape[0]} (w×h)")
 
-            # f)  Save the final crop as a JPEG
+            # f)  Save the final crop as JPEG
             jpg_name = f"{tms}.{original_part}.{seq}.jpg"
             out_jpg = os.path.join(imgs_dir, jpg_name)
             print(f"   · Writing JPEG → {out_jpg}")
             cv2.imwrite(out_jpg, crop_img)
 
-            # g)  Clean up the temporary PDF
+            # g)  Clean up
             print("   · Removing temp PDF")
             os.remove(pdf_path)
             time.sleep(STEP_DELAY)
