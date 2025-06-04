@@ -31,7 +31,7 @@ DPI             = 300
 THICKNESS_IN    = 0.004
 MATERIAL_DENSITY= 0.035
 FACTOR          = 166
-STEP_DELAY      = 0.5 #whenever you need a short delay insert: time.sleep(STEP_DELAY)
+STEP_DELAY      = 5 #whenever you need a short delay insert: time.sleep(STEP_DELAY)
 
 # Map keyword labels to BGR fill colors
 COLOR_MAP = {
@@ -341,6 +341,80 @@ def detect_with_one_set(img_gray, templates, offsets):
         offx, offy = offsets[q]
         dets[q] = (x1 + loc[0] + offx, y1 + loc[1] + offy)
     return dets
+    
+def find_nearby_blob_group(
+    img_color,
+    min_area: int = 500,
+    tol: int    = 50,
+    pad: int    = 20
+) -> tuple[int,int,int,int] | None:
+    """
+    Locate ALL non-white contours in img_color. Pick the single largest contour
+    (by area), then find any other contours whose bottom‐edge is within `tol` pixels
+    of that largest contour's bottom edge. If at least two contours qualify, union
+    their bounding boxes into one rectangle, pad by `pad` pixels on each side, and return it.
+    Otherwise return None.
+
+    - min_area : ignore any contour whose w*h < min_area
+    - tol      : vertical tolerance (pixels) to group bottoms of contours
+    - pad      : pad (pixels) to expand the unioned bounding box (clamped)
+    """
+    import cv2
+    import numpy as np
+
+    # 1) Grayscale + threshold → every pixel < 250 becomes “ink” (255 in mask), white → 0.
+    gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
+    _, thresh = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
+
+    # 2) Find all external contours
+    cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return None
+
+    # 3) Keep only those whose bounding‐rect area >= min_area
+    boxes = []
+    for c in cnts:
+        x, y, w, h = cv2.boundingRect(c)
+        if w*h < min_area:
+            continue
+        boxes.append((x, y, w, h))
+
+    if len(boxes) < 2:
+        return None
+
+    # 4) Identify the largest box by area (w*h)
+    main = max(boxes, key=lambda b: b[2]*b[3])
+    mx, my, mw, mh = main
+    main_bottom = my + mh
+
+    # 5) Gather any other box whose bottom is within tol pixels of main_bottom
+    group = [main]
+    for (x, y, w, h) in boxes:
+        if (x, y, w, h) == main:
+            continue
+        bottom = y + h
+        if abs(bottom - main_bottom) <= tol:
+            group.append((x, y, w, h))
+
+    if len(group) < 2:
+        return None
+
+    # 6) Union all group‐boxes into a single bounding rectangle
+    xs = [b[0] for b in group] + [b[0] + b[2] for b in group]
+    ys = [b[1] for b in group] + [b[1] + b[3] for b in group]
+    x0 = min(xs)
+    y0 = min(ys)
+    x1 = max(xs)
+    y1 = max(ys)
+
+    # 7) Apply uniform padding → clamp within image
+    img_h, img_w = img_color.shape[:2]
+    x0p = max(x0 - pad, 0)
+    y0p = max(y0 - pad, 0)
+    x1p = min(x1 + pad, img_w)
+    y1p = min(y1 + pad, img_h)
+
+    return (x0p, y0p, x1p, y1p)
 
 def crop_blob_bbox(img_gray):
     """Return bounding box (x0,y0,x1,y1) of the largest dark blob."""
@@ -742,8 +816,8 @@ def safe_download(part, tmp_dir, driver, base_url, profile):
     """
     # We will attempt a 1-minute wait first; if that fails, switch to 2-minute
     # intervals forever after (rather than continually growing).
-    first_wait = 60       # 1 minute
-    subsequent_wait = 120  # 2 minutes
+    first_wait = 120       # 1 minute
+    subsequent_wait = 200  # 3 minutes 20 seconds
     attempt = 0            # counter
 
     while True:
@@ -1028,22 +1102,22 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
                     print(f"   · Using bracket‐crop + 5% pad: {(x0c, y0c, x1c, y1c)}")
 
                 except RuntimeError as e:
-                    # Enter this block if select_best_crop_box fails (no valid bracket)
-                    print(f"   · Bracket‐template failed ({e}); falling back…")
+                # ── NEW FALLBACK SEQUENCE STARTS HERE ──
+                    print(f"   · No valid bracket candidates ({e}); falling back…")
 
-                    # --- 3) Fallback #2: aligned‐blobs group (if ≥2 components share a common baseline)
+                    # 1) Fallback #1: aligned‐blobs group (if at least two blobs share a common baseline)
                     grp = find_aligned_blob_group(img, min_area=5000, tol=10, pad=20)
                     if grp:
                         x0g, y0g, x1g, y1g = grp
                         print(f"   · Aligned blob group crop: {grp}")
-                        # Crop 20px extra inside image bounds
+                        # Crop an extra 20px inside image bounds
                         crop_img = img[
-                            max(0, y0g - 20):min(y1g + 20, h_img),
-                            max(0, x0g - 20):min(x1g + 20, w_img)
+                            max(0, y0g - 20) : min(y1g + 20, h_img),
+                            max(0, x0g - 20) : min(x1g + 20, w_img)
                         ]
 
                     else:
-                        # --- 4) Fallback #3: enclosed rectangle (rounded border only)
+                        # 2) Fallback #2: enclosed rectangle (rounded border only)
                         gray_fb = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
                         rect2 = detect_enclosed_box(gray_fb, min_area=5000)
                         if rect2:
@@ -1052,101 +1126,120 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
                             crop_img = img[y0e2:y1e2, x0e2:x1e2]
 
                         else:
-                            # --- 5) Fallback #4: “Full‐logo” via “…mm” line (top‐portion crop)
+                            # 3) Fallback #3: “Full‐logo” via “…mm” line (top‐portion crop)
                             y_crop = crop_full_logo(pdf_path, dpi=DPI)
                             if y_crop:
                                 print(f"   · Full‐logo crop at y={y_crop}px")
                                 crop_img = img[:y_crop, :]
 
                             else:
-                                # --- 6) Fallback #4a: union‐of‐ink‐contours (catch disconnected parts + any red text)
-                                print("   · No enclosed rectangle; attempting union of ALL ink contours…")
-                                rect_union = find_union_of_ink_contours(img, min_area=2000, pad_pct=0.05)
-                                if rect_union:
-                                    x0u, y0u, x1u, y1u = rect_union
-                                    print(f"   · Union‐of‐ink‐contours crop: {(x0u, y0u, x1u, y1u)}")
-                                    crop_img = img[y0u:y1u, x0u:x1u]
+                                # 4) Fallback #4: GROUPED UNION‐OF‐INK‐CONTOURS (catch disconnected parts)
+                                print("   · No enclosed rectangle; attempting grouped union of ALL ink contours…")
+
+                                # a) Build a binary “ink” mask of any non‐white pixels
+                                gray_fb2 = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                                _, thresh_fb2 = cv2.threshold(gray_fb2, 250, 255, cv2.THRESH_BINARY_INV)
+                                cnts_fb2, _ = cv2.findContours(
+                                    thresh_fb2,
+                                    cv2.RETR_EXTERNAL,
+                                    cv2.CHAIN_APPROX_SIMPLE
+                                )
+
+                                # b) Collect bounding boxes for contours above a minimal area
+                                boxes = []
+                                for c in cnts_fb2:
+                                    x, y, w, h = cv2.boundingRect(c)
+                                    area = w * h
+                                    if area < 100:  # ignore tiny specks
+                                        continue
+                                    boxes.append((x, y, w, h))
+
+                                if boxes:
+                                    # Pick the **largest** blob by area as the “main blob”
+                                    boxes_sorted = sorted(boxes, key=lambda b: b[2] * b[3], reverse=True)
+                                    main_box = boxes_sorted[0]
+                                    mx, my, mw, mh = main_box
+                                    cluster = [main_box]
+
+                                    # Now group any other boxes whose horizontal center is
+                                    # “close enough” to the main blob’s center (within (mw/2 + 50) px).
+                                    center_main_x = mx + mw / 2
+                                    for bx, by, bw, bh in boxes_sorted[1:]:
+                                        center_b_x = bx + bw / 2
+                                        if abs(center_b_x - center_main_x) <= (mw / 2 + 50):
+                                            cluster.append((bx, by, bw, bh))
+
+                                    # Compute the union bounding box of that entire cluster
+                                    xs = [b[0] for b in cluster] + [b[0] + b[2] for b in cluster]
+                                    ys = [b[1] for b in cluster] + [b[1] + b[3] for b in cluster]
+                                    x0u = min(xs); y0u = min(ys)
+                                    x1u = max(xs); y1u = max(ys)
+
+                                    # Pad this union by 5% on each side
+                                    pad_x = int((x1u - x0u) * 0.05)
+                                    pad_y = int((y1u - y0u) * 0.05)
+                                    x0p = max(x0u - pad_x, 0)
+                                    y0p = max(y0u - pad_y, 0)
+                                    x1p = min(x1u + pad_x, w_img)
+                                    y1p = min(y1u + pad_y, h_img)
+
+                                    print(f"   · Grouped union-of-ink crop: {(x0p, y0p, x1p, y1p)}")
+                                    crop_img = img[y0p:y1p, x0p:x1p]
 
                                 else:
-                                    # --- 7) Simplified Fallback #4b: union of every non‐white pixel (no area filter)
-                                    print("   · Union‐of‐ink failed; doing SIMPLE union of all dark pixels…")
-                                    gray2 = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                                    # threshold at 250 → any gray <250 becomes “ink”
-                                    _, thresh2 = cv2.threshold(gray2, 250, 255, cv2.THRESH_BINARY_INV)
-                                    cnts2, _ = cv2.findContours(thresh2, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                                    # 5) Fallback #5: as a last resort, a 1% full‐page margin crop
+                                    margin = int(0.01 * min(h_img, w_img))
+                                    print("   · No sufficient ink; doing full-page margin crop")
+                                    crop_img = img[
+                                        margin : h_img - margin,
+                                        margin : w_img - margin
+                                    ]
 
-                                    if cnts2:
-                                        # union all bounding‐rects of these contours
-                                        boxes2 = [cv2.boundingRect(c) for c in cnts2]
-                                        x0_all = min(b[0] for b in boxes2)
-                                        y0_all = min(b[1] for b in boxes2)
-                                        x1_all = max(b[0] + b[2] for b in boxes2)
-                                        y1_all = max(b[1] + b[3] for b in boxes2)
+                    # ── At this point, `crop_img` has been assigned by either the “aligned blobs” fallback,
+                    #     or by “enclosed rectangle”, or by “full-logo via mm”, or by our new “grouped ink” logic,
+                    #     or by the final 1%‐margin fallback.
+                    print(f"   · Final crop size: {crop_img.shape[1]}×{crop_img.shape[0]} (w×h)")
 
-                                        # pad it by 5% on each side
-                                        pad_x = int((x1_all - x0_all) * 0.05)
-                                        pad_y = int((y1_all - y0_all) * 0.05)
+                    # f)  Save the final crop as JPEG
+                    jpg_name = f"{tms}.{original_part}.{seq}.jpg"
+                    out_jpg = os.path.join(imgs_dir, jpg_name)
+                    print(f"   · Writing JPEG → {out_jpg}")
+                    cv2.imwrite(out_jpg, crop_img)
 
-                                        x0_thr = max(x0_all - pad_x, 0)
-                                        y0_thr = max(y0_all - pad_y, 0)
-                                        x1_thr = min(x1_all + pad_x, w_img)
-                                        y1_thr = min(y1_all + pad_y, h_img)
+                    # g)  Clean up
+                    print("   · Removing temp PDF")
+                    os.remove(pdf_path)
+                    time.sleep(STEP_DELAY)
 
-                                        print(f"   · All‐ink union crop: {(x0_thr, y0_thr, x1_thr, y1_thr)}")
-                                        crop_img = img[y0_thr:y1_thr, x0_thr:x1_thr]
+                    # ─── 8) Record row (dimensions already parsed) ──────────────────────────
+                    vol  = h_in * w_in * THICKNESS_IN
+                    wgt  = vol * MATERIAL_DENSITY
+                    dimw = vol / FACTOR
 
-                                    else:
-                                        # If even that fails (extremely unlikely), do a 1% margin
-                                        margin = int(0.01 * min(h_img, w_img))
-                                        print("   · All‐ink union also failed; using 1% margin crop")
-                                        crop_img = img[
-                                            margin : h_img - margin,
-                                            margin : w_img - margin
-                                        ]
-
-            # At this point, crop_img must have come from one of the above branches
-            print(f"   · Final crop size: {crop_img.shape[1]}×{crop_img.shape[0]} (w×h)")
-
-            # f)  Save the final crop as JPEG
-            jpg_name = f"{tms}.{original_part}.{seq}.jpg"
-            out_jpg = os.path.join(imgs_dir, jpg_name)
-            print(f"   · Writing JPEG → {out_jpg}")
-            cv2.imwrite(out_jpg, crop_img)
-
-            # g)  Clean up
-            print("   · Removing temp PDF")
-            os.remove(pdf_path)
-            time.sleep(STEP_DELAY)
-
-            # ─── 8) Record row (dimensions already parsed) ──────────────────────────
-            vol  = h_in * w_in * THICKNESS_IN
-            wgt  = vol * MATERIAL_DENSITY
-            dimw = vol / FACTOR
-
-            records.append({
-                'ITEM_ID':         original_part,
-                'ITEM_TYPE':       '',
-                'DESCRIPTION':     '',
-                'NET_LENGTH':      h_in,
-                'NET_WIDTH':       w_in,
-                'NET_HEIGHT':      THICKNESS_IN,
-                'NET_WEIGHT':      wgt,
-                'NET_VOLUME':      vol,
-                'NET_DIM_WGT':     dimw,
-                'DIM_UNIT':        'in',
-                'WGT_UNIT':        'lb',
-                'VOL_UNIT':        'in',
-                'FACTOR':          FACTOR,
-                'SITE_ID':         SITE_ID,
-                'TIME_STAMP':      ts,
-                'OPT_INFO_2':      'Y',
-                'OPT_INFO_3':      'N',
-                'OPT_INFO_8':      0,
-                'IMAGE_FILE_NAME': jpg_name,
-                'UPDATED':         'Y'
-            })
-            print(f"[{i}] ✅ Done\n")
-            time.sleep(STEP_DELAY)
+                    records.append({
+                        'ITEM_ID':         original_part,
+                        'ITEM_TYPE':       '',
+                        'DESCRIPTION':     '',
+                        'NET_LENGTH':      h_in,
+                        'NET_WIDTH':       w_in,
+                        'NET_HEIGHT':      THICKNESS_IN,
+                        'NET_WEIGHT':      wgt,
+                        'NET_VOLUME':      vol,
+                        'NET_DIM_WGT':     dimw,
+                        'DIM_UNIT':        'in',
+                        'WGT_UNIT':        'lb',
+                        'VOL_UNIT':        'in',
+                        'FACTOR':          FACTOR,
+                        'SITE_ID':         SITE_ID,
+                        'TIME_STAMP':      ts,
+                        'OPT_INFO_2':      'Y',
+                        'OPT_INFO_3':      'N',
+                        'OPT_INFO_8':      0,
+                        'IMAGE_FILE_NAME': jpg_name,
+                        'UPDATED':         'Y'
+                    })
+                    print(f"[{i}] ✅ Done\n")
+                    time.sleep(STEP_DELAY)
 
         except Exception as e:
             print(f"[{i}] ❌ ERROR: {e}")
