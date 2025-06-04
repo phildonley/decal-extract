@@ -224,18 +224,18 @@ def render_pdf_color_page(pdf_path, dpi=300):
     else:
         return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
         
-def find_union_of_ink_contours(img_color, min_area=500, pad_pct=0.05, proximity_px=50):
+def find_union_of_ink_contours(img_color, min_area=500, pad_pct=0.05):
     """
-    From a BGR image (300 dpi) of a PDF page, build a mask of any non-white pixels ("ink"),
-    find all contours whose area is >= min_area, then cluster together any contours whose
-    bounding-boxes lie within `proximity_px` pixels (horizontally) and overlap vertically.
-    Finally, take the union of that cluster’s bounding box, pad it outward by pad_pct,
-    and return (x0, y0, x1, y1). Returns None if no contour of sufficient size exists.
+    From a BGR image (300 dpi) of a PDF page, build a mask of any non-white pixels (“ink”),
+    find all contours whose area is >= min_area, take their union bounding box,
+    and pad that box on all sides by pad_pct (fraction of box size) OUTWARDS.
+    Returns (x0, y0, x1, y1) or None if no contour of sufficient size is found.
 
-    - img_color: full-resolution (300 dpi) BGR numpy array.
-    - min_area: ignore any contour smaller than this (in pixels²). Default=500.
-    - pad_pct: fraction of the union‐box’s width/height to expand OUTWARDS on each side. Default=0.05 (5%).
-    - proximity_px: maximum horizontal gap (in pixels) for merging two contours into the same group. Default=50.
+    - img_color: the full-resolution (300 dpi) BGR numpy array.
+    - min_area: ignore any contour smaller than this (in pixels^2). Default=500.
+                (Lowered from 2000 so that moderately-sized logo pieces are not discarded.)
+    - pad_pct: fraction of the union-box’s width/height to expand OUTWARDS on each side.
+               Default=0.05 (5%).
     """
     import cv2
     import numpy as np
@@ -243,6 +243,7 @@ def find_union_of_ink_contours(img_color, min_area=500, pad_pct=0.05, proximity_
     # 1) Build an “ink” mask = any pixel that isn’t nearly white.
     gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
     _, thresh = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
+    # Now 'thresh' is 255 at any location where grayscale < 250, and 0 at white.
 
     # 2) Find all external contours on that mask
     cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -250,74 +251,33 @@ def find_union_of_ink_contours(img_color, min_area=500, pad_pct=0.05, proximity_
         return None
 
     # 3) Keep only contours whose area >= min_area
-    boxes = []
+    big_boxes = []
     for c in cnts:
         area = cv2.contourArea(c)
         if area < min_area:
             continue
         x, y, w, h = cv2.boundingRect(c)
-        boxes.append((x, y, w, h))
-    if not boxes:
+        big_boxes.append((x, y, w, h))
+    if not big_boxes:
         return None
 
-    # 4) Sort boxes by their left‐edge x-coordinate
-    boxes = sorted(boxes, key=lambda b: b[0])
+    # 4) Union all those bounding rects into one big box
+    x0 = min(box[0] for box in big_boxes)
+    y0 = min(box[1] for box in big_boxes)
+    x1 = max(box[0] + box[2] for box in big_boxes)
+    y1 = max(box[1] + box[3] for box in big_boxes)
 
-    # 5) Find the single largest‐area contour to seed our cluster
-    areas = [w * h for (x, y, w, h) in boxes]
-    largest_idx = int(np.argmax(areas))
-    gx, gy, gw, gh = boxes[largest_idx]
-
-    # Group bounding‐box so far = that largest contour
-    group_x0 = gx
-    group_y0 = gy
-    group_x1 = gx + gw
-    group_y1 = gy + gh
-
-    absorbed = True
-    used = set([largest_idx])
-
-    # 6) Grow the cluster by absorbing any box whose x-range is within proximity_px
-    #    AND whose y-range overlaps with the current group vertically.
-    while absorbed:
-        absorbed = False
-        for i, (x, y, w, h) in enumerate(boxes):
-            if i in used:
-                continue
-
-            # a) Horizontal‐gap check: how far is this box from our current group?
-            bx0, bx1 = x, x + w
-            if bx1 < group_x0:
-                dist_horiz = group_x0 - bx1
-            elif bx0 > group_x1:
-                dist_horiz = bx0 - group_x1
-            else:
-                dist_horiz = 0
-
-            # b) Vertical‐overlap check: does y..y+h overlap group_y0..group_y1?
-            vy0, vy1 = y, y + h
-            overlap_vert = not (vy1 < group_y0 or vy0 > group_y1)
-
-            if dist_horiz <= proximity_px and overlap_vert:
-                # absorb this contour
-                used.add(i)
-                absorbed = True
-                group_x0 = min(group_x0, x)
-                group_y0 = min(group_y0, y)
-                group_x1 = max(group_x1, x + w)
-                group_y1 = max(group_y1, y + h)
-
-    # 7) Pad that final union‐box by pad_pct (uniformly) and clamp to image bounds
+    # 5) Pad that union OUTWARDS by pad_pct in each direction, clamped to image edges
     img_h, img_w = img_color.shape[:2]
-    rect_w = group_x1 - group_x0
-    rect_h = group_y1 - group_y0
+    rect_w = x1 - x0
+    rect_h = y1 - y0
     pad_x = int(rect_w * pad_pct)
     pad_y = int(rect_h * pad_pct)
 
-    x0p = max(group_x0 - pad_x, 0)
-    y0p = max(group_y0 - pad_y, 0)
-    x1p = min(group_x1 + pad_x, img_w)
-    y1p = min(group_y1 + pad_y, img_h)
+    x0p = max(x0 - pad_x, 0)
+    y0p = max(y0 - pad_y, 0)
+    x1p = min(x1 + pad_x, img_w)
+    y1p = min(y1 + pad_y, img_h)
 
     if x1p <= x0p or y1p <= y0p:
         return None
@@ -1258,10 +1218,10 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
                     print("   · Bracket‐template crop (dim‐guided)…")
 
                 except RuntimeError as e:
-                    # ── NEW FALLBACK BLOCK STARTS HERE ──
+                    # ── FALLBACK SEQUENCE STARTS HERE ──
                     print(f"   · No valid bracket candidates ({e}); falling back…")
 
-                    # 1) Fallback #1: aligned‐blobs group (if at least two blobs share a common baseline)
+                    # 1) Fallback #1: aligned-blobs group (if at least two blobs share a common baseline)
                     grp = find_aligned_blob_group(img, min_area=5000, tol=10, pad=20)
                     if grp:
                         x0g, y0g, x1g, y1g = grp
@@ -1282,31 +1242,29 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
                             crop_img = img[y0e2:y1e2, x0e2:x1e2]
 
                         else:
-                            # 3) Fallback #3: “Full‐logo” via “…mm” line (top‐portion crop)
+                            # 3) Fallback #3: “Full-logo” via “…mm” line (top-portion crop)
                             y_crop = crop_full_logo(pdf_path, dpi=DPI)
                             if y_crop:
-                                print(f"   · Full‐logo crop at y={y_crop}px")
+                                print(f"   · Full-logo crop at y={y_crop}px")
                                 crop_img = img[:y_crop, :]
 
                             else:
-                                # 4) Fallback #4: UNION‐OF‐INK‐CONTOURS (catch disconnected pieces)
+                                # 4) Fallback #4: UNION-OF-INK-CONTOURS (catch disconnected pieces)
                                 print("   · No enclosed rectangle; attempting union of ALL ink contours…")
-                                # Call our new, “clustered” union‐of‐ink function:
+                                # Call our new union-all-contours function (min_area=500, pad_pct=0.05):
                                 rect_union = find_union_of_ink_contours(
                                     img,
                                     min_area=500,
-                                    pad_pct=0.05,
-                                    proximity_px=50
+                                    pad_pct=0.05
                                 )
                                 if rect_union:
                                     x0u, y0u, x1u, y1u = rect_union
-                                    print(f"   · Union‐of‐ink‐contours crop: {(x0u, y0u, x1u, y1u)}")
-                                    crop_img = img[y0u:y1u, x0u:x1u]
-
+                                    print(f"   · Union-of-ink-contours crop: {(x0u, y0u, x1u, y1u)}")
+                                    crop_img = img[y0u : y1u, x0u : x1u]
                                 else:
-                                    # 5) Fallback #5: as a last resort, just do a 1% full‐page margin crop
+                                    # 5) Fallback #5: as a last resort, do a 1% full-page margin crop
                                     margin = int(0.01 * min(h_img, w_img))
-                                    print("   · Union‐of‐ink failed; doing full‐page margin crop")
+                                    print("   · Union-of-ink failed; doing full-page margin crop")
                                     crop_img = img[
                                         margin : h_img - margin,
                                         margin : w_img - margin
