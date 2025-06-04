@@ -1028,22 +1028,22 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
                     print(f"   · Using bracket‐crop + 5% pad: {(x0c, y0c, x1c, y1c)}")
 
                 except RuntimeError as e:
-                    # Enter this block if “No valid crop candidates found” under select_best_crop_box
+                    # Enter this block if select_best_crop_box fails (no valid bracket)
                     print(f"   · Bracket‐template failed ({e}); falling back…")
 
-                    # --- 3) Fallback #2: aligned‐blobs group (if at least two blobs share a common baseline)
+                    # --- 3) Fallback #2: aligned‐blobs group (if ≥2 components share a common baseline)
                     grp = find_aligned_blob_group(img, min_area=5000, tol=10, pad=20)
                     if grp:
                         x0g, y0g, x1g, y1g = grp
                         print(f"   · Aligned blob group crop: {grp}")
                         # Crop 20px extra inside image bounds
                         crop_img = img[
-                            max(0, y0g - 20) : min(y1g + 20, h_img),
-                            max(0, x0g - 20) : min(x1g + 20, w_img)
+                            max(0, y0g - 20):min(y1g + 20, h_img),
+                            max(0, x0g - 20):min(x1g + 20, w_img)
                         ]
 
                     else:
-                        # --- 4) Fallback #3: enclosed rectangle (rounded border) – rarely hits, but keep it
+                        # --- 4) Fallback #3: enclosed rectangle (rounded border only)
                         gray_fb = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
                         rect2 = detect_enclosed_box(gray_fb, min_area=5000)
                         if rect2:
@@ -1068,43 +1068,43 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
                                     crop_img = img[y0u:y1u, x0u:x1u]
 
                                 else:
-                                    # --- 7) NEW FALLBACK #4b: Canny‐edge union (catch every disconnected black/ink component)
-                                    # This ensures that if the standard union‐of‐ink fails to capture all blobs,
-                                    # we fall back to a Canny‐based edge union.  In practice, this catches
-                                    # disconnected letter‐parts (like the three blobs of the Genie logo).
-                                    print("   · Union‐of‐ink failed; attempting Canny‐edge union…")
-                                    # 7a) Compute Canny edges, then a small dilation, then union of bounding‐boxes.
+                                    # --- 7) Simplified Fallback #4b: union of every non‐white pixel (no area filter)
+                                    print("   · Union‐of‐ink failed; doing SIMPLE union of all dark pixels…")
                                     gray2 = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                                    edges = cv2.Canny(gray2, 50, 150)
-                                    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-                                    dilated = cv2.dilate(edges, kernel, iterations=1)
-                                    cnts2, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                                    # threshold at 250 → any gray <250 becomes “ink”
+                                    _, thresh2 = cv2.threshold(gray2, 250, 255, cv2.THRESH_BINARY_INV)
+                                    cnts2, _ = cv2.findContours(thresh2, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
                                     if cnts2:
+                                        # union all bounding‐rects of these contours
                                         boxes2 = [cv2.boundingRect(c) for c in cnts2]
                                         x0_all = min(b[0] for b in boxes2)
                                         y0_all = min(b[1] for b in boxes2)
                                         x1_all = max(b[0] + b[2] for b in boxes2)
                                         y1_all = max(b[1] + b[3] for b in boxes2)
-                                        # pad by 5% of width/height:
-                                        pad_x = int(((x1_all - x0_all) * 0.05))
-                                        pad_y = int(((y1_all - y0_all) * 0.05))
-                                        x0_ce = max(x0_all - pad_x, 0)
-                                        y0_ce = max(y0_all - pad_y, 0)
-                                        x1_ce = min(x1_all + pad_x, w_img)
-                                        y1_ce = min(y1_all + pad_y, h_img)
-                                        print(f"   · Canny‐edge union crop: {(x0_ce, y0_ce, x1_ce, y1_ce)}")
-                                        crop_img = img[y0_ce:y1_ce, x0_ce:x1_ce]
+
+                                        # pad it by 5% on each side
+                                        pad_x = int((x1_all - x0_all) * 0.05)
+                                        pad_y = int((y1_all - y0_all) * 0.05)
+
+                                        x0_thr = max(x0_all - pad_x, 0)
+                                        y0_thr = max(y0_all - pad_y, 0)
+                                        x1_thr = min(x1_all + pad_x, w_img)
+                                        y1_thr = min(y1_all + pad_y, h_img)
+
+                                        print(f"   · All‐ink union crop: {(x0_thr, y0_thr, x1_thr, y1_thr)}")
+                                        crop_img = img[y0_thr:y1_thr, x0_thr:x1_thr]
+
                                     else:
-                                        # If even edges failed (extremely unlikely), we fall back to 1% margin:
+                                        # If even that fails (extremely unlikely), do a 1% margin
                                         margin = int(0.01 * min(h_img, w_img))
-                                        print("   · Canny‐edge union also failed; doing full‐page margin crop")
+                                        print("   · All‐ink union also failed; using 1% margin crop")
                                         crop_img = img[
                                             margin : h_img - margin,
                                             margin : w_img - margin
                                         ]
 
-            # At this point, crop_img must be set by one of the above branches
+            # At this point, crop_img must have come from one of the above branches
             print(f"   · Final crop size: {crop_img.shape[1]}×{crop_img.shape[0]} (w×h)")
 
             # f)  Save the final crop as JPEG
@@ -1173,7 +1173,7 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
     df_out.to_csv(out_csv, index=False)
     print("All done →", out_csv)
 
-    # ── (Legacy block #6: never reached now) ─────────────────────────────────────────
+    # ── (Legacy block #6: not usually reached) ─────────────────────────────────────────
     print("    · Rendering page to image…")
     img_color = render_pdf_color_page(pdf_path, dpi=DPI)
     h_img, w_img = img_color.shape[:2]
@@ -1270,7 +1270,6 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
         'UPDATED':         'Y'
     })
     print(f"[{i}] ✅ Done\n")
-
 
 if __name__ == '__main__':
     # 0) pick profile first
