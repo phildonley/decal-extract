@@ -920,6 +920,116 @@ def _wait_for_library_or_lock(driver, poll_interval=5):
 
         # 3) Otherwise, sleep and try again.
         time.sleep(poll_interval)
+        
+def find_grouped_union_of_ink_contours(img_color, min_area=500, pad_pct=0.05, proximity_px=50):
+    """
+    1) Threshold `img_color` so that any pixel <250→foreground (ink).
+    2) Find all external contours in that thresholded mask.
+    3) Keep only those contours whose area >= min_area.
+    4) Cluster together any contours whose bounding boxes come within
+       `proximity_px` pixels horizontally (and that overlap vertically at all).
+    5) Compute one big bounding box around that cluster (group) and then pad it
+       outward by pad_pct * (width_of_group) horizontally and pad_pct * (height_of_group) vertically.
+    Returns (x0, y0, x1, y1) or None if no contour was found.
+    """
+
+    # Step 1: Create a binary “ink mask”
+    gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
+    _, thresh = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
+
+    # Step 2: Find all external contours
+    cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return None
+
+    # Step 3: Filter by area >= min_area
+    boxes = []
+    for c in cnts:
+        area = cv2.contourArea(c)
+        if area < min_area:
+            continue
+        x, y, w, h = cv2.boundingRect(c)
+        boxes.append((x, y, w, h))
+    if not boxes:
+        return None
+
+    # Step 4: Sort boxes by x-coordinate (left edge)
+    boxes = sorted(boxes, key=lambda b: b[0])
+
+    # We'll form a single “cluster” by starting from the largest‐area contour,
+    # then absorbing any other box whose bounding box’s x-range comes within
+    # proximity_px, AND whose y-range overlaps at all.  (This guarantees we pull
+    # in the entire disconnected logo, but nothing extremely far away.)
+    # First, identify the “largest” blob by area.
+    #    (We know each box is (x, y, w, h).)
+    areas = [w*h for (x,y,w,h) in boxes]
+    largest_idx = int(np.argmax(areas))
+    gx, gy, gw, gh = boxes[largest_idx]
+
+    # Our “group’s bounding rect so far”:
+    group_x0 = gx
+    group_y0 = gy
+    group_x1 = gx + gw
+    group_y1 = gy + gh
+
+    # Now attempt to absorb any other contours that lie “close enough.”
+    # We do a single pass over all boxes (including ones on either side).  If a box’s
+    # x‐range [x, x+w] is within proximity_px of our current group’s [group_x0, group_x1],
+    # and its y‐range [y, y+h] overlaps at all with our group’s [group_y0, group_y1],
+    # we absorb it and expand our group.  We repeat until no new box can be absorbed.
+    absorbed = True
+    used = set([largest_idx])
+
+    while absorbed:
+        absorbed = False
+        for i, (x, y, w, h) in enumerate(boxes):
+            if i in used:
+                continue
+            # Horizontal proximity check:
+            #    We say “close enough” if box’s x is within proximity_px of group_x1,
+            #    OR if group_x0 is within proximity_px of box’s x+w.
+            bx0, bx1 = x, x + w
+            dist_horiz = 0
+            if bx1 < group_x0:
+                dist_horiz = group_x0 - bx1
+            elif bx0 > group_x1:
+                dist_horiz = bx0 - group_x1
+            else:
+                dist_horiz = 0  # they overlap horizontally already
+
+            # Vertical overlap check: do they share any y-range?
+            #    (i.e. box’s y..y+h intersects group_y0..group_y1)
+            vy0, vy1 = y, y + h
+            overlap_vert = not (vy1 < group_y0 or vy0 > group_y1)
+
+            if dist_horiz <= proximity_px and overlap_vert:
+                # absorb it
+                used.add(i)
+                absorbed = True
+                group_x0 = min(group_x0, x)
+                group_y0 = min(group_y0, y)
+                group_x1 = max(group_x1, x + w)
+                group_y1 = max(group_y1, y + h)
+
+    # At this point, (group_x0, group_y0) … (group_x1, group_y1) covers
+    # all contours in that cluster.  Now pad this bounding box outward by pad_pct:
+    img_h, img_w = img_color.shape[:2]
+    gw = group_x1 - group_x0
+    gh = group_y1 - group_y0
+    pad_x = int(gw * pad_pct)
+    pad_y = int(gh * pad_pct)
+
+    x0p = max(group_x0 - pad_x, 0)
+    y0p = max(group_y0 - pad_y, 0)
+    x1p = min(group_x1 + pad_x, img_w)
+    y1p = min(group_y1 + pad_y, img_h)
+
+    # If our final padded box is degenerate, return None:
+    if x1p <= x0p or y1p <= y0p:
+        return None
+
+    return (x0p, y0p, x1p, y1p)
+
     
 def find_aligned_blob_group(img_color, min_area=10000, tol=10, pad=20):
     """
