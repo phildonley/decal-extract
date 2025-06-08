@@ -1006,12 +1006,11 @@ def main(input_sheet, output_root, seq=105):
     for i, row in df.iterrows():
         original_part = row['PART'].strip()
         tms           = row['TMS']
-        search_part   = strip_gt_suffix(original_part)
 
         print(f"[{i}] ➡️ Processing part={search_part} (orig={original_part}), TMS={tms}")
 
         # 1) Download PDF via API
-        pdf_path = download_pdf_via_api(search_part, tmp_dir, api_key)
+        pdf_path = download_pdf_via_api(original_part, tmp_dir, api_key)
         if not pdf_path:
             print(f"    · No document found for {original_part}; skipping.")
             records.append({
