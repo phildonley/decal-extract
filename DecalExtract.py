@@ -16,7 +16,7 @@ import pandas as pd
 import pdfplumber
 
 from tkinter import filedialog
-from DecalExtract_helper import get_valid_api_key
+from DecalExtract_helper import get_valid_api_key, fetch_pdf_via_api
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 SITE_ID         = 733
