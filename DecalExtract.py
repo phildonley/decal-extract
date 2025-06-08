@@ -1201,8 +1201,11 @@ def main(input_sheet, output_root, seq=105):
     print(f"[{i}] ✅ Done\n")
 
 if __name__ == '__main__':
-    sheet = filedialog.askopenfilename(...)    # or accept as sys.argv
-    out_root = filedialog.askdirectory(...)
+    root = tk.Tk()
+    root.withdraw()
+    
+    sheet = filedialog.askopenfilename(title="Select Excel file", filetypes=[("Excel files", "*.xlsx")])
+    out_root = filedialog.askdirectory(title="Select output directory")
     main(sheet, out_root, seq=105)
 )
 
