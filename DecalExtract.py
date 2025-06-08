@@ -1,4 +1,5 @@
 import os
+import json
 import re
 import glob
 import time
@@ -12,17 +13,8 @@ import numpy as np
 import pandas as pd
 import pdfplumber
 
-import tkinter as tk
 from urllib.parse import urljoin
-from tkinter import filedialog, simpledialog
-
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import WebDriverException, NoSuchElementException
-from selenium.common.exceptions import TimeoutException
+from DecalExtract_helper import get_valid_api_key
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 SITE_ID         = 733
@@ -41,175 +33,41 @@ COLOR_MAP = {
     'blue':   (204, 102,   0),
     'black':  (  0,   0,   0),
 }
+# ── The Secret Sauce ──────────────────────────────────────────────────────────
+KEY_FILE = os.path.expanduser("~/.decal_api_key.json")
+API_ENDPOINT = "https://hal4ecrr1tk.execute-api.us-east-1.amazonaws.com/prod/get_current_drawing"
 
 # ── Utility Functions ─────────────────────────────────────────────────────────
-def choose_chrome_profile():
+def get_valid_api_key() -> str:
     """
-    Two‐button chooser:
-      • Default → %LOCALAPPDATA%/Google/Chrome/User Data/Default
-      • Custom  → prompt for folder (blank ⇒ new session)
-    Returns the chosen path, or None.
+    Prompt the user once for X-API-KEY, store it in ~/.decal_api_key.json,
+    and return it.  On subsequent runs, re-use the saved key.
     """
-    # hidden root
-    root = tk.Tk()
-    root.withdraw()
-
-    choice = {'profile': None}
-    dlg = tk.Toplevel(root)
-    dlg.title("Select Chrome Profile")
-    dlg.geometry("360x140")
-    dlg.resizable(False, False)
-
-    tk.Label(
-        dlg,
-        text=(
-            "Choose a Chrome profile:\n\n"
-            "• Default: all Chrome windows must be closed first\n"
-            "  (uses your existing Default profile folder)\n"
-            "• Custom: browse or type a folder (blank ⇒ new session)"
-        ),
-        justify="left",
-        wraplength=350,
-        padx=10, pady=10
-    ).pack()
-
-    def _use_default():
-        local = os.environ.get("LOCALAPPDATA")
-        if local:
-            choice['profile'] = os.path.join(
-                local, "Google", "Chrome", "User Data", "Default"
-            )
-        else:
-            choice['profile'] = None
-        dlg.destroy()
-
-    def _use_custom():
-        p = simpledialog.askstring(
-            "Custom Profile",
-            "Enter full path to Chrome profile folder\n(leave blank for new):",
-            parent=dlg
-        )
-        choice['profile'] = p or None
-        dlg.destroy()
-
-    frm = tk.Frame(dlg, pady=5)
-    frm.pack()
-    tk.Button(frm, text="Default", width=14, command=_use_default).pack(side="left", padx=8)
-    tk.Button(frm, text="Custom",  width=14, command=_use_custom).pack(side="left", padx=8)
-
-    # wait for the dialog to go away
-    root.wait_window(dlg)
-    root.destroy()
-    return choice['profile']
-        
-def strip_gt_suffix(part: str) -> str:
-    """
-    Remove a trailing “GT” from the part number, if present,
-    but leave any other letters (e.g. DU, FR, etc.) untouched.
-    """
-    if part.endswith("GT"):
-        return part[:-2]
-    return part
-
-def clear_filters(driver, timeout=10):
-    """Click any existing remove-filter buttons, wait for them to disappear."""
-    remove_btns = driver.find_elements(By.CSS_SELECTOR, 'button.a-IRR-button--remove')
-    for b in remove_btns:
+    # 1) Try to load existing key
+    if os.path.exists(KEY_FILE):
         try:
-            b.click()
-        except:
+            with open(KEY_FILE, "r") as f:
+                data = json.load(f)
+                key = data.get("x_api_key")
+                if key:
+                    return key
+        except Exception:
             pass
-    WebDriverWait(driver, timeout).until(
-        EC.invisibility_of_element_located((By.CSS_SELECTOR, 'button.a-IRR-button--remove'))
-    )
 
-def init_driver(download_dir, profile_dir=None, headless=False):
-    """Configure Chrome for headless PDF downloads into download_dir."""
-    opts = Options()
-    if profile_dir:
-        # point at both the user‐data dir and the Default subfolder
-        opts.add_argument(f"--user-data-dir={profile_dir}")
-        opts.add_argument("--profile-directory=Default")
-    prefs = {
-        "download.default_directory": os.path.abspath(download_dir),
-        "download.prompt_for_download": False,
-        # force external download (not in‐browser)
-        "plugins.always_open_pdf_externally": True,
-    }
-    opts.add_experimental_option("prefs", prefs)
-    if headless:
-        opts.add_argument("--headless")
-    return webdriver.Chrome(options=opts)
+    # 2) Ask the user to paste in their API key
+    print("Please paste your X-API-KEY for the signed-URL service:")
+    key = getpass.getpass(prompt="X-API-KEY: ")
 
-def download_pdf_for_part(part, tmp_dir, driver, base_url):
-    """
-    Search for 'part' in the library, download its PDF into tmp_dir, and return the local path.
-    - If “No data found” appears, return None.
-    - If the sign-in lightbox appears, raise to trigger safe_download retry.
-    - If no exact match <td> is found, return None (skip).
-    - Otherwise download the PDF (inline URL or click+poll).
-    """
-    wait = WebDriverWait(driver, 20)
-
-    # 1) Search for the part
-    driver.get(base_url)
-    wait.until(EC.presence_of_element_located((By.ID, 'docLibContainer_search_field')))
-    clean = strip_gt_suffix(part)
-    fld = wait.until(EC.element_to_be_clickable((By.ID, 'docLibContainer_search_field')))
-    fld.clear()
-    fld.send_keys(clean)
-    driver.find_element(By.ID, 'docLibContainer_search_button').click()
-
-    # 1a) Bail if “No data found”
-    time.sleep(1)
-    if driver.find_elements(By.CSS_SELECTOR, 'div.a-IRR-noDataMsg'):
-        return None
-
-    # 1b) Detect locked-out sign-in lightbox
-    if driver.find_elements(By.CSS_SELECTOR, 'div.sign-in-box.ext-sign-in-box'):
-        # Only this exact condition triggers a restart
-        raise WebDriverException("Session locked, need to re-login")
-
-    # 2) Try to click the row’s “Documents” button for an exact match.
-    #    If no exact <td> for 'clean' appears, bail out immediately.
+    # 3) Save it for next time
     try:
-        td = driver.find_element(
-            By.XPATH,
-            f"//td[normalize-space(text())='{clean}']"
-        )
-    except NoSuchElementException:
-        return None
+        with open(KEY_FILE, "w") as f:
+            json.dump({"x_api_key": key}, f)
+        os.chmod(KEY_FILE, 0o600)
+    except Exception as e:
+        print(f"Warning: could not save key to {KEY_FILE}: {e}")
 
-    tr = td.find_element(By.XPATH, "./ancestor::tr")
-    docs_btn = tr.find_element(By.XPATH, ".//button[contains(., 'Documents')]")
-    docs_btn.click()
-
-    # 3) Switch into the Documents iframe
-    wait.until(EC.frame_to_be_available_and_switch_to_it(
-        (By.CSS_SELECTOR, "iframe[title='Documents']")
-    ))
-
-    # 4) Try inline URL download
-    dl = wait.until(EC.presence_of_element_located((By.ID, "downloadBtn")))
-    onclick = dl.get_attribute("onclick") or ""
-    m = re.search(r"doDownload\('([^']+)','([^']+)'\)", onclick)
-    if m:
-        url_frag, filename = m.groups()
-        full_url = urljoin(base_url, url_frag)
-        cookies = {c["name"]: c["value"] for c in driver.get_cookies()}
-        resp = requests.get(full_url, cookies=cookies, timeout=60)
-        resp.raise_for_status()
-        out_path = os.path.join(tmp_dir, filename)
-        with open(out_path, "wb") as f:
-            f.write(resp.content)
-        driver.switch_to.default_content()
-        return out_path
-
-    # 5) Fallback: click + poll for the PDF file
-    dl.click()
-    driver.switch_to.default_content()
-    return wait_for_pdf(tmp_dir, clean, timeout=DOWNLOAD_TIMEOUT)
-
+    return key
+    
 def render_pdf_color_page(pdf_path, dpi=300):
     """Load the first page of PDF at `dpi` into a BGR numpy image."""
     doc = fitz.open(pdf_path)
@@ -719,21 +577,6 @@ def crop_full_logo(pdf_path, dpi=300, margin_pt=5):
     dim_top_pt = min(w["top"] for w in dims)
     return int((dim_top_pt - margin_pt) * dpi / 72)
 
-def wait_for_pdf(tmp_dir, part, timeout=DOWNLOAD_TIMEOUT):
-    """
-    Poll tmp_dir until a PDF whose filename contains `part` appears
-    and its size is >0. Returns its full path.
-    """
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        for fn in os.listdir(tmp_dir):
-            if fn.lower().endswith('.pdf') and part in fn:
-                full = os.path.join(tmp_dir, fn)
-                if os.path.getsize(full) > 0:
-                    return full
-        time.sleep(0.5)
-    raise RuntimeError(f"Timeout waiting for PDF containing '{part}'")
-
 def match_one_corner(img_color, tpl_edges, offset, quadrant):
     gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
     H, W = gray.shape
@@ -852,121 +695,6 @@ def wait_for_login(driver, timeout=300):
         EC.presence_of_element_located((By.ID, 'docLibContainer_search_field'))
     )
 
-def safe_download(part, tmp_dir, driver, base_url, profile):
-    """
-    Attempt to download PDF for `part`. On WebDriverException or locked-out lightbox,
-    fully quit Chrome, wait (1 minute for the first retry; 2 minutes thereafter),
-    re-initialize, wait for manual re-login, then retry exactly this `part`.
-
-    Returns (pdf_path, driver) once the PDF is downloaded, or (None, driver) if “No data found”.
-    """
-    # We will attempt a 1-minute wait first; if that fails, switch to 2-minute
-    # intervals forever after (rather than continually growing).
-    first_wait = 120       # 1 minute
-    subsequent_wait = 200  # 3 minutes 20 seconds
-    attempt = 0            # counter
-
-    while True:
-        try:
-            # If driver is None, create it fresh (first iteration or after quit)
-            if driver is None:
-                driver = init_driver(tmp_dir, profile_dir=profile, headless=False)
-                driver.get(base_url)
-                # Wait until the IRR search field is present (manual login if needed)
-                WebDriverWait(driver, 300).until(
-                    EC.presence_of_element_located((By.ID, 'docLibContainer_search_field'))
-                )
-
-            # Attempt to download the PDF normally
-            pdf_path = download_pdf_for_part(part, tmp_dir, driver, base_url)
-
-            # If download_pdf_for_part returns None → no document found
-            if not pdf_path:
-                return None, driver
-
-            return pdf_path, driver
-
-        except WebDriverException as e:
-            msg = str(e)
-            # Specifically handle our locked-out lightbox by forcing a re-login
-            if "Session locked" in msg or "lightbox" in msg or "sign-in-box" in msg.lower():
-                wait_time = first_wait if attempt == 0 else subsequent_wait
-                print(f"    · Locked out ({msg}); closing browser and retrying in {wait_time}s…")
-                try:
-                    driver.quit()
-                except Exception:
-                    pass
-                driver = None
-                attempt += 1
-                time.sleep(wait_time)
-
-                # Re-open fresh browser and wait for manual login again
-                driver = init_driver(tmp_dir, profile_dir=profile, headless=False)
-                driver.get(base_url)
-                print("    · Waiting for library page to become available…")
-                try:
-                    WebDriverWait(driver, 300).until(
-                        EC.presence_of_element_located((By.ID, 'docLibContainer_search_field'))
-                    )
-                    print("    · Library page detected; resuming download for part:", part)
-                except TimeoutException:
-                    # If still locked out, we’ll loop back and retry after another wait_time
-                    print(f"    · Still locked out after {wait_time}s; will retry.")
-                    continue
-
-            else:
-                # Any other WebDriverException (e.g. Chrome crashed). Retry after a wait.
-                wait_time = first_wait if attempt == 0 else subsequent_wait
-                print(f"    · WebDriverException ({msg}); closing browser and retrying in {wait_time}s…")
-                try:
-                    driver.quit()
-                except Exception:
-                    pass
-                driver = None
-                attempt += 1
-                time.sleep(wait_time)
-                continue
-
-        except TimeoutException as te:
-            # Timeout waiting for PDF or for search field – treat like other exceptions
-            wait_time = first_wait if attempt == 0 else subsequent_wait
-            print(f"    · TimeoutException ({te}); closing browser and retrying in {wait_time}s…")
-            try:
-                driver.quit()
-            except Exception:
-                pass
-            driver = None
-            attempt += 1
-            time.sleep(wait_time)
-            continue
-
-def _wait_for_library_or_lock(driver, poll_interval=5):
-    """
-    Block until we see the real library search field appear.
-    If the locked-out lightbox appears first, ignore it and keep polling.
-    i.e. we never timeout here; we only return once '#docLibContainer_search_field' is found.
-    """
-    from selenium.common.exceptions import TimeoutException
-
-    while True:
-        # 1) If the library search field is present, we’re done.
-        try:
-            WebDriverWait(driver, 3).until(
-                EC.presence_of_element_located((By.ID, 'docLibContainer_search_field'))
-            )
-            return  # library is available again
-        except TimeoutException:
-            pass
-
-        # 2) If the lockout screen is present, ignore it and keep waiting
-        #    (we do not raise here; just give the user more time to log in).
-        if driver.find_elements(By.CSS_SELECTOR, 'div.sign-in-box.ext-sign-in-box'):
-            print("    · Found lockout box—still waiting for manual re-login…")
-            # (do NOT quit; just keep looping)
-
-        # 3) Otherwise, sleep and try again.
-        time.sleep(poll_interval)
-
 def find_horizontal_aligned_union(img_color, min_area=2000, tol=250, pad_pct=0.05, min_ratio=0.5):
     """
     Group only those “big” contours (area ≥ min_area) whose vertical centers
@@ -1032,6 +760,72 @@ def find_horizontal_aligned_union(img_color, min_area=2000, tol=250, pad_pct=0.0
     y1p = min(y1u + pad_y, h_img)
 
     return (x0p, y0p, x1p, y1p)
+
+def download_pdf_via_api(part_number: str, pdf_dir: str, api_key: str) -> str:
+    """
+    1) POST {part_number} + x-api-key
+    2) parse JSON or raw text for a signed CloudFront URL
+    3) GET that URL → save PDF under pdf_dir
+    4) return local path, or None on failure
+    """
+    body = {"part_number": part_number}
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": api_key
+    }
+
+    # a) call the API
+    try:
+        resp = requests.post(API_ENDPOINT,
+                             headers=headers,
+                             data=json.dumps(body),
+                             timeout=30)
+        resp.raise_for_status()
+    except Exception as e:
+        print(f"   · [ERROR] API call failed for '{part_number}': {e}")
+        return None
+
+    # b) extract signed URL
+    signed_url = None
+    try:
+        payload = resp.json()
+        if isinstance(payload, dict) and "url" in payload:
+            signed_url = payload["url"]
+        elif isinstance(payload, str) and payload.startswith("http"):
+            signed_url = payload
+        else:
+            raise ValueError(f"Bad payload: {payload!r}")
+    except ValueError:
+        text = resp.text.strip()
+        if text.startswith("http"):
+            signed_url = text
+        else:
+            print(f"   · [ERROR] Unexpected API response for '{part_number}': {resp.text!r}")
+            return None
+
+    # c) download the PDF bytes
+    try:
+        dl = requests.get(signed_url, timeout=60)
+        dl.raise_for_status()
+    except Exception as e:
+        print(f"   · [ERROR] Could not GET PDF for '{part_number}': {e}")
+        return None
+
+    # d) save to disk
+    os.makedirs(pdf_dir, exist_ok=True)
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_name = part_number.replace(" ", "_")
+    filename = f"{safe_name}_{ts}.pdf"
+    out_path = os.path.join(pdf_dir, filename)
+    try:
+        with open(out_path, "wb") as f:
+            f.write(dl.content)
+    except Exception as e:
+        print(f"   · [ERROR] Writing PDF to disk failed: {e}")
+        return None
+
+    print(f"   · [API] Downloaded PDF → {out_path}")
+    return out_path
     
 def find_grouped_union_of_ink_contours(img_color, min_area=500, pad_pct=0.05, proximity_px=50):
     """
@@ -1178,7 +972,8 @@ def find_aligned_blob_group(img_color, min_area=10000, tol=10, pad=20):
     y1 = min(max(ys) + pad, img_color.shape[0])
     return (x0, y0, x1, y1)
 
-def main(input_sheet, output_root, base_url, profile=None, seq=105):
+def main(input_sheet, output_root, seq=105):
+    api_key = get_valid_api_key()
     # ─── Prepare output directories ────────────────────────────────────────────
     today     = datetime.datetime.now().strftime('%m%d%Y')
     base_name = f"decal_output_{today}"
@@ -1194,14 +989,6 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
     tmp_dir  = os.path.join(out_dir, 'temp_pdfs')
     for d in (imgs_dir, dbg_dir, cub_dir, tmp_dir):
         os.makedirs(d, exist_ok=True)
-
-    # ─── Launch browser & load library ─────────────────────────────────────────
-    driver = init_driver(tmp_dir, profile_dir=profile)
-    print("· Browser launched")
-    driver.get(base_url)
-    wait = WebDriverWait(driver, 20)
-    wait.until(EC.presence_of_element_located((By.ID, 'docLibContainer_search_field')))
-    print("· Library page ready")
 
     # ─── Load templates once ───────────────────────────────────────────────────
     template_sets = load_template_sets('templates')
@@ -1224,7 +1011,9 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
 
         try:
             # 1) Download PDF (auto-retries on WebDriver errors)
-            result = safe_download(search_part, tmp_dir, driver, base_url, profile)
+            pdf_path = download_pdf_via_api(search_part, tmp_dir, api_key)
+            if not pdf_path:
+                print(f"    · No document found for {original_part}; skipping.")
             if isinstance(result, tuple):
                 pdf_path, driver = result
             else:
@@ -1480,10 +1269,6 @@ def main(input_sheet, output_root, base_url, profile=None, seq=105):
             continue
 
     # ─── Tear down & write CSV ───────────────────────────────────────────────────
-    try:
-        driver.quit()
-    except:
-        pass
     shutil.rmtree(tmp_dir, ignore_errors=True)
     df_out = pd.DataFrame(records)
     cols = [
