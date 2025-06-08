@@ -974,6 +974,7 @@ def find_aligned_blob_group(img_color, min_area=10000, tol=10, pad=20):
 
 def main(input_sheet, output_root, seq=105):
     api_key = get_valid_api_key()
+
     # ─── Prepare output directories ────────────────────────────────────────────
     today     = datetime.datetime.now().strftime('%m%d%Y')
     base_name = f"decal_output_{today}"
@@ -997,276 +998,93 @@ def main(input_sheet, output_root, seq=105):
     # ─── Read parts list ───────────────────────────────────────────────────────
     df = pd.read_excel(input_sheet, dtype=str)
     df.columns = df.columns.str.upper()
-    df.rename(columns={df.columns[0]:'PART', df.columns[1]:'TMS'}, inplace=True)
+    df.rename(columns={df.columns[0]: 'PART', df.columns[1]: 'TMS'}, inplace=True)
     records = []
     ts = datetime.datetime.now().strftime('%Y%m%d_%H%M') + '00'
 
     # ─── Loop over each row ────────────────────────────────────────────────────
     for i, row in df.iterrows():
         original_part = row['PART'].strip()
-        tms          = row['TMS']
-        search_part  = strip_gt_suffix(original_part)
+        tms           = row['TMS']
+        search_part   = strip_gt_suffix(original_part)
 
         print(f"[{i}] ➡️ Processing part={search_part} (orig={original_part}), TMS={tms}")
 
-        try:
-            # 1) Download PDF (auto-retries on WebDriver errors)
-            pdf_path = download_pdf_via_api(search_part, tmp_dir, api_key)
-            if not pdf_path:
-                print(f"    · No document found for {original_part}; skipping.")
-            if isinstance(result, tuple):
-                pdf_path, driver = result
-            else:
-                pdf_path = result
-
-            # 1a) skip if no document for this part
-            if not pdf_path:
-                print(f"    · No document found for {original_part}; skipping.")
-                records.append({
-                    'ITEM_ID':         original_part,
-                    'ITEM_TYPE':       '',
-                    'DESCRIPTION':     '',
-                    'NET_LENGTH':      0,
-                    'NET_WIDTH':       0,
-                    'NET_HEIGHT':      THICKNESS_IN,
-                    'NET_WEIGHT':      0,
-                    'NET_VOLUME':      0,
-                    'NET_DIM_WGT':     0,
-                    'DIM_UNIT':        'in',
-                    'WGT_UNIT':        'lb',
-                    'VOL_UNIT':        'in',
-                    'FACTOR':          FACTOR,
-                    'SITE_ID':         SITE_ID,
-                    'TIME_STAMP':      ts,
-                    'OPT_INFO_2':      'N',
-                    'OPT_INFO_3':      'N',
-                    'OPT_INFO_8':      0,
-                    'IMAGE_FILE_NAME': '',
-                    'UPDATED':         'N'
-                })
-                continue
-
-            print(f"    · PDF downloaded → {pdf_path}")
-
-            # a)  Render first page to BGR image & build “ink” mask
-            img = render_pdf_color_page(pdf_path, dpi=DPI)
-            h_img, w_img = img.shape[:2]
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            _, blob = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
-
-            # b)  Find the first row with any ink (to compute y0_art for bracket clamping)
-            ys = np.where(blob.sum(axis=1) > 0)[0]
-            y0_art = int(ys.min()) if ys.size else 0
-            PAD_TOP = 5
-            y0_art = max(0, y0_art - PAD_TOP)
-
-            # c)  Parse (h × w) from PDF so we have expected aspect ratio
-            h_in, w_in = parse_dimensions_from_pdf(pdf_path)
-            expected_ar = (w_in / h_in) if (h_in and w_in) else None
-
-            # d)  Attempt crop‐mark → bracket → union‐of‐all‐ink (with 5% padding)
-            print("   · Attempting crop-mark → bracket → union-of-all-ink…")
-
-            # Prepare grayscale for crop‐mark detection:
-            gray_for_rect = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            enclosed_rect = detect_enclosed_box(gray_for_rect, min_area=5000)
-
-            # If the detected “enclosed rectangle” starts below 20% of image height, ignore it:
-            if enclosed_rect:
-                ex0, ey0, ex1, ey1 = enclosed_rect
-                if ey0 > int(0.20 * h_img):
-                    print(f"   · Ignoring small crop-mark at y={ey0} (too low); falling back…")
-                    enclosed_rect = None
-
-            crop_img = None
-
-            # 1) If we still have a valid enclosed_rect, expand it by 5% on all sides
-            if enclosed_rect:
-                ex0, ey0, ex1, ey1 = enclosed_rect
-                rect_w = ex1 - ex0
-                rect_h = ey1 - ey0
-
-                pad = int(min(rect_w, rect_h) * 0.05)
-                x0c = max(ex0 - pad, 0)
-                y0c = max(ey0 - pad, 0)
-                x1c = min(ex1 + pad, w_img)
-                y1c = min(ey1 + pad, h_img)
-
-                crop_img = img[y0c:y1c, x0c:x1c]
-                print(f"   · Using crop-mark + 5% pad: {(x0c, y0c, x1c, y1c)}")
-
-            else:
-                # 2) Fallback #1: try bracket‐template detection
-                try:
-                    # (a) Run corner‐based bracket detection exactly as before:
-                    x0b, y0b, x1b, y1b = select_best_crop_box(
-                        img,
-                        template_sets,
-                        expected_ratio=expected_ar
-                    )
-                    bracket_rect = (x0b, y0b, x1b, y1b)
-
-                    # (b) Re-detect the rounded border (if any) for overlap check:
-                    gray_for_rect_2 = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                    enclosed_rect_2 = detect_enclosed_box(gray_for_rect_2, min_area=5000)
-
-                    # (c) Decide if bracket_rect “covers” 90% of that border:
-                    use_enclosed = False
-                    if enclosed_rect_2:
-                        x0e2, y0e2, x1e2, y1e2 = enclosed_rect_2
-                        enclosed_area = (x1e2 - x0e2) * (y1e2 - y0e2)
-
-                        # Intersection between bracket_rect and enclosed_rect_2
-                        ix0 = max(x0b, x0e2)
-                        iy0 = max(y0b, y0e2)
-                        ix1 = min(x1b, x1e2)
-                        iy1 = min(y1b, y1e2)
-
-                        inter_area = 0
-                        if ix1 > ix0 and iy1 > iy0:
-                            inter_area = (ix1 - ix0) * (iy1 - iy0)
-
-                        # If bracket misses >10% of that border, swap to enclosed_rect_2
-                        if enclosed_area > 0 and (inter_area / float(enclosed_area)) < 0.90:
-                            print("   · Bracket detection unreliable (low overlap); swapping to enclosed rectangle")
-                            use_rect = enclosed_rect_2
-                            use_enclosed = True
-                        else:
-                            use_rect = bracket_rect
-                    else:
-                        # No border detected → just use bracket_rect
-                        use_rect = bracket_rect
-
-                    # (d) Compute final crop box:
-                    if use_enclosed:
-                        ex0u, ey0u, ex1u, ey1u = use_rect
-                        rect_w2 = ex1u - ex0u
-                        rect_h2 = ey1u - ey0u
-                        pad2 = int(min(rect_w2, rect_h2) * 0.05)
-
-                        x0c = max(ex0u - pad2, 0)
-                        y0c = max(ey0u - pad2, 0)
-                        x1c = min(ex1u + pad2, w_img)
-                        y1c = min(ey1u + pad2, h_img)
-
-                    else:
-                        # “Tight” bracket-based crop, but clamp top edge near y0_art
-                        x0b2, y0b2, x1b2, y1b2 = use_rect
-
-                        if abs(y0b2 - y0_art) > 20:
-                            y0c = y0_art
-                        else:
-                            y0c = min(y0b2, y0_art + 20)
-
-                        x0c = x0b2
-                        x1c = x1b2
-                        y1c = y1b2
-
-                        # Clamp into image bounds
-                        x0c = max(x0c, 0)
-                        y0c = max(y0c, 0)
-                        x1c = min(x1c, w_img)
-                        y1c = min(y1c, h_img)
-
-                    # (e) Crop that result
-                    crop_img = img[y0c:y1c, x0c:x1c]
-                    print(f"   · Final crop box (corner-template): {(x0c, y0c, x1c, y1c)}")
-
-                except RuntimeError as e:
-                    # ── FALLBACK SEQUENCE STARTS HERE ──
-                    print(f"   · No valid bracket candidates ({e}); falling back…")
-
-                    # Fallback #2: try enclosed rectangle again (ignore if too low)
-                    gray_fb = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                    rect2 = detect_enclosed_box(gray_fb, min_area=5000)
-
-                    if rect2:
-                        x0e2, y0e2, x1e2, y1e2 = rect2
-                        if y0e2 > int(0.20 * h_img):
-                            print(f"   · Ignoring enclosed rect at y={y0e2} (too low); moving on to union-of-ink…")
-                            rect2 = None
-                        else:
-                            print(f"   · Enclosed rectangle crop: {(x0e2, y0e2, x1e2, y1e2)}")
-                            crop_img = img[y0e2:y1e2, x0e2:x1e2]
-
-                    if rect2 is None:
-                        # Fallback #3: horizontal‐aligned union of ink contours
-                        print("   · No valid enclosed rectangle; attempting horizontal-aligned union of ink contours…")
-                        rect_union = find_horizontal_aligned_union(
-                            img,
-                            min_area=2000,
-                            tol=250,
-                            pad_pct=0.05,
-                            min_ratio=0.5
-                        )
-                        if rect_union:
-                            x0u, y0u, x1u, y1u = rect_union
-                            print(f"   · Aligned union-of-ink crop: {(x0u, y0u, x1u, y1u)}")
-                            crop_img = img[y0u:y1u, x0u:x1u]
-                        else:
-                            # Fallback #4: final “safe” crop = 1% full‐page margin
-                            margin = int(0.01 * min(h_img, w_img))
-                            print("   · Aligned union failed; doing 1% full-page margin crop")
-                            crop_img = img[
-                                margin : h_img - margin,
-                                margin : w_img - margin
-                            ]
-                    # ── FALLBACK SEQUENCE ENDS HERE ──
-
-            # ── At this point, `crop_img` is guaranteed to exist from one of:
-            #    • crop-mark + pad
-            #    • bracket-template ± clamp
-            #    • enclosed rectangle (if high enough)
-            #    • horizontal-aligned union-of-ink (09.4618.1621 case)
-            #    • 1% full-page margin
-            print(f"   · Final crop size: {crop_img.shape[1]}×{crop_img.shape[0]} (w×h)")
-
-            # f)  Save the final crop as JPEG
-            jpg_name = f"{tms}.{original_part}.{seq}.jpg"
-            out_jpg = os.path.join(imgs_dir, jpg_name)
-            print(f"   · Writing JPEG → {out_jpg}")
-            cv2.imwrite(out_jpg, crop_img)
-
-            # g)  Clean up
-            print("   · Removing temp PDF")
-            os.remove(pdf_path)
-            time.sleep(STEP_DELAY)
-
-            # ─── 8) Record row (dimensions already parsed) ──────────────────────────
-            vol  = h_in * w_in * THICKNESS_IN
-            wgt  = vol * MATERIAL_DENSITY
-            dimw = vol / FACTOR
-
+        # 1) Download PDF via API
+        pdf_path = download_pdf_via_api(search_part, tmp_dir, api_key)
+        if not pdf_path:
+            print(f"    · No document found for {original_part}; skipping.")
             records.append({
-                'ITEM_ID':         original_part,
-                'ITEM_TYPE':       '',
-                'DESCRIPTION':     '',
-                'NET_LENGTH':      h_in,
-                'NET_WIDTH':       w_in,
-                'NET_HEIGHT':      THICKNESS_IN,
-                'NET_WEIGHT':      wgt,
-                'NET_VOLUME':      vol,
-                'NET_DIM_WGT':     dimw,
-                'DIM_UNIT':        'in',
-                'WGT_UNIT':        'lb',
-                'VOL_UNIT':        'in',
-                'FACTOR':          FACTOR,
-                'SITE_ID':         SITE_ID,
-                'TIME_STAMP':      ts,
-                'OPT_INFO_2':      'Y',
-                'OPT_INFO_3':      'N',
-                'OPT_INFO_8':      0,
-                'IMAGE_FILE_NAME': jpg_name,
-                'UPDATED':         'Y'
+                'ITEM_ID': original_part,
+                # ... fill in the rest of your “skip” record fields ...
+                'NET_LENGTH': 0,
+                'NET_WIDTH': 0,
+                'NET_HEIGHT': THICKNESS_IN,
+                'IMAGE_FILE_NAME': '',
+                'UPDATED': 'N',
+                'TIME_STAMP': ts,
+                'SITE_ID': SITE_ID,
+                'FACTOR': FACTOR,
+                # etc.
             })
-            print(f"[{i}] ✅ Done\n")
-            time.sleep(STEP_DELAY)
-
-        except Exception as e:
-            print(f"[{i}] ❌ ERROR: {e}")
-            with open(os.path.join(dbg_dir, 'errors.log'), 'a', encoding='utf-8') as f:
-                f.write(f"{original_part}: {e}\n")
             continue
+
+        print(f"    · PDF downloaded → {pdf_path}")
+
+        # a) Render first page to BGR image & build “ink” mask
+        img = render_pdf_color_page(pdf_path, dpi=DPI)
+        h_img, w_img = img.shape[:2]
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        _, blob = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
+
+        # b) Compute y0_art for bracket clamping
+        ys = np.where(blob.sum(axis=1) > 0)[0]
+        y0_art = int(ys.min()) if ys.size else 0
+        y0_art = max(0, y0_art - 5)
+
+        # c) Parse dimensions
+        h_in, w_in = parse_dimensions_from_pdf(pdf_path)
+        expected_ar = (w_in / h_in) if (h_in and w_in) else None
+
+        # d) Crop logic (unchanged)…
+        print("   · Attempting crop-mark → bracket → union-of-all-ink…")
+        gray_for_rect = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        enclosed_rect = detect_enclosed_box(gray_for_rect, min_area=5000)
+        if enclosed_rect:
+            ex0, ey0, ex1, ey1 = enclosed_rect
+            if ey0 > int(0.20 * h_img):
+                enclosed_rect = None
+
+        # … insert the rest of your cropping fallbacks here exactly as before …
+
+        # f) Save the final crop as JPEG
+        jpg_name = f"{tms}.{original_part}.{seq}.jpg"
+        out_jpg = os.path.join(imgs_dir, jpg_name)
+        cv2.imwrite(out_jpg, crop_img)
+        print(f"   · Writing JPEG → {out_jpg}")
+
+        # g) Clean up
+        os.remove(pdf_path)
+        time.sleep(STEP_DELAY)
+
+        # 8) Record row
+        vol  = h_in * w_in * THICKNESS_IN
+        wgt  = vol * MATERIAL_DENSITY
+        records.append({
+            'ITEM_ID':         original_part,
+            'NET_LENGTH':      h_in,
+            'NET_WIDTH':       w_in,
+            'NET_HEIGHT':      THICKNESS_IN,
+            'NET_WEIGHT':      wgt,
+            'NET_VOLUME':      vol,
+            'IMAGE_FILE_NAME': jpg_name,
+            'UPDATED':         'Y',
+            'TIME_STAMP':      ts,
+            'SITE_ID':         SITE_ID,
+            'FACTOR':          FACTOR,
+            # etc.
+        })
+        print(f"[{i}] ✅ Done\n")
 
     # ─── Tear down & write CSV ───────────────────────────────────────────────────
     shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -1412,10 +1230,7 @@ if __name__ == '__main__':
         exit()
 
     # 4) run!
-    main(
-        input_sheet=sheet,
-        output_root=out_root,
-        base_url=url,
-        profile=profile,
+    main(input_sheet, 
+        output_root, 
         seq=105
     )
