@@ -1,6 +1,8 @@
 import os
 import json
 import getpass
+import socket
+import requests
 
 KEY_FILE = os.path.expanduser("~/.decal_api_key.json")
 
@@ -34,13 +36,14 @@ def fetch_pdf_via_api(part_number: str, pdf_dir: str) -> str | None:
     Fetches a PDF for a part number using the API and saves it locally.
     Returns the file path if successful, otherwise None.
     """
+    from DecalExtract import API_ENDPOINT, API_KEY  # Assumes these are defined in the main script
 
     # (a) Ensure API key is initialized
     if API_KEY is None:
         raise RuntimeError("API_KEY has not been initialized!")
 
     # (b) Extract hostname for DNS check
-    host = API_ENDPOINT.split("/")[2]  # e.g., "hal4ecrr1k.execute-api.us-east-1.amazonaws.com"
+    host = API_ENDPOINT.split("/")[2]
 
     # (c) DNS resolution check
     try:
@@ -96,4 +99,3 @@ def fetch_pdf_via_api(part_number: str, pdf_dir: str) -> str | None:
     except Exception as download_err:
         print(f"[ERROR] Failed to download PDF from signed URL: {download_err}")
         return None
-
