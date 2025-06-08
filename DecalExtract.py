@@ -7,6 +7,7 @@ import datetime
 import shutil
 import requests
 import getpass
+import tkinter as tk
 
 import cv2
 import fitz       # PyMuPDF
@@ -14,6 +15,7 @@ import numpy as np
 import pandas as pd
 import pdfplumber
 
+from tkinter import filedialog
 from DecalExtract_helper import get_valid_api_key
 
 # ── Configuration ──────────────────────────────────────────────────────────────
