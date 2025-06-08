@@ -6,30 +6,23 @@ import requests
 
 KEY_FILE = os.path.expanduser("~/.decal_api_key.json")
 
-def get_valid_api_key() -> str:
+def get_valid_api_key():
     """
-    Returns a stored API key, or prompts the user and stores it if not found.
+    Returns a cached API key or prompts the user to paste it the first time.
+    Saves to ~/.decal_api_key.json for reuse.
     """
     if os.path.exists(KEY_FILE):
         try:
             with open(KEY_FILE, "r") as f:
-                data = json.load(f)
-            return data["api_key"]
-        except Exception as err:
-            print(f"[WARN] Failed to load API key: {err}")
+                return json.load(f)["api_key"]
+        except Exception as e:
+            print(f"[WARN] Failed to read API key file: {e}")
 
-    # Prompt user for API key
-    print("Please paste your X-API-KEY for the signed-URL service:")
-    api_key = getpass.getpass("X-API-KEY: ").strip()
-
-    # Store for future use
-    try:
-        with open(KEY_FILE, "w") as f:
-            json.dump({"api_key": api_key}, f)
-    except Exception as err:
-        print(f"[WARN] Failed to save API key to disk: {err}")
-
-    return api_key
+    api_key = getpass.getpass("Please paste your X-API-KEY for the signed-URL service: ")
+    with open(KEY_FILE, "w") as f:
+        json.dump({"api_key": api_key.strip()}, f)
+    print("[OK] API key saved to disk.")
+    return api_key.strip()
 
 def fetch_pdf_via_api(part_number: str, pdf_dir: str) -> str | None:
     """
