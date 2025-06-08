@@ -39,7 +39,7 @@ COLOR_MAP = {
 KEY_FILE = os.path.expanduser("~/.decal_api_key.json")
 API_ENDPOINT = "https://hal4ecrr1k.execute-api.us-east-1.amazonaws.com/prod/get_current_drawing"
 host = "hal4ecrr1k.execute-api.us-east-1.amazonaws.com"
-
+API_KEY = None
 
 # ── Utility Functions ─────────────────────────────────────────────────────────
 def get_valid_api_key() -> str:
@@ -977,7 +977,8 @@ def find_aligned_blob_group(img_color, min_area=10000, tol=10, pad=20):
     return (x0, y0, x1, y1)
 
 def main(input_sheet, output_root, seq=105):
-    api_key = get_valid_api_key()
+    global API_KEY
+    API_KEY = get_valid_api_key()
 
     # ─── Prepare output directories ────────────────────────────────────────────
     today     = datetime.datetime.now().strftime('%m%d%Y')
