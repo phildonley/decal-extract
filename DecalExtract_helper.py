@@ -4,6 +4,31 @@ import getpass
 
 KEY_FILE = os.path.expanduser("~/.decal_api_key.json")
 
+def get_valid_api_key() -> str:
+    """
+    Returns a stored API key, or prompts the user and stores it if not found.
+    """
+    if os.path.exists(KEY_FILE):
+        try:
+            with open(KEY_FILE, "r") as f:
+                data = json.load(f)
+            return data["api_key"]
+        except Exception as err:
+            print(f"[WARN] Failed to load API key: {err}")
+
+    # Prompt user for API key
+    print("Please paste your X-API-KEY for the signed-URL service:")
+    api_key = getpass.getpass("X-API-KEY: ").strip()
+
+    # Store for future use
+    try:
+        with open(KEY_FILE, "w") as f:
+            json.dump({"api_key": api_key}, f)
+    except Exception as err:
+        print(f"[WARN] Failed to save API key to disk: {err}")
+
+    return api_key
+
 def fetch_pdf_via_api(part_number: str, pdf_dir: str) -> str | None:
     """
     Fetches a PDF for a part number using the API and saves it locally.
