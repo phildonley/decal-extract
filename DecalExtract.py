@@ -1009,7 +1009,7 @@ def main(input_sheet, output_root, seq=105):
         original_part = row['PART'].strip()
         tms           = row['TMS']
 
-        print(f"[{i}] ➡️ Processing part={search_part} (orig={original_part}), TMS={tms}")
+        print(f"[{i}] ➡️ Processing part={original_part}, TMS={tms}")
 
         # 1) Download PDF via API
         pdf_path = download_pdf_via_api(original_part, tmp_dir, api_key)
