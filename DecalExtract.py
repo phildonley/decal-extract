@@ -1204,7 +1204,13 @@ if __name__ == '__main__':
     root = tk.Tk()
     root.withdraw()
     
-    sheet = filedialog.askopenfilename(title="Select Excel file", filetypes=[("Excel files", "*.xlsx")])
-    out_root = filedialog.askdirectory(title="Select output directory")
+    sheet = filedialog.askopenfilename(
+    title="Select Excel file",
+    filetypes=[("Excel files", "*.xlsx")]
+    )
+    
+    out_root = filedialog.askdirectory(
+        title="Select output directory"
+    )
     main(sheet, out_root, seq=105)
 
