@@ -6,6 +6,7 @@ import time
 import datetime
 import shutil
 import requests
+import getpass
 
 import cv2
 import fitz       # PyMuPDF
@@ -13,7 +14,6 @@ import numpy as np
 import pandas as pd
 import pdfplumber
 
-from urllib.parse import urljoin
 from DecalExtract_helper import get_valid_api_key
 
 # ── Configuration ──────────────────────────────────────────────────────────────
@@ -1200,37 +1200,8 @@ def main(input_sheet, output_root, seq=105):
     print(f"[{i}] ✅ Done\n")
 
 if __name__ == '__main__':
-    # 0) pick profile first
-    print("→ About to ask for Chrome profile…")
-    profile = choose_chrome_profile()
-    print("→ Using profile:", profile or "<new session>")
+    sheet = filedialog.askopenfilename(...)    # or accept as sys.argv
+    out_root = filedialog.askdirectory(...)
+    main(sheet, out_root, seq=105)
+)
 
-    # 1) pick parts sheet
-    sheet = filedialog.askopenfilename(
-        title='Select parts sheet',
-        filetypes=[('Excel/CSV','*.xlsx *.xls *.csv')]
-    )
-    if not sheet:
-        print("No sheet selected, exiting.")
-        exit()
-
-    # 2) pick output folder
-    out_root = filedialog.askdirectory(title='Select output folder')
-    if not out_root:
-        print("No output folder selected, exiting.")
-        exit()
-
-    # 3) enter the library URL
-    url = simpledialog.askstring(
-        'Document Library URL',
-        'Enter the library URL:'
-    )
-    if not url:
-        print("No URL provided, exiting.")
-        exit()
-
-    # 4) run!
-    main(input_sheet, 
-        output_root, 
-        seq=105
-    )
