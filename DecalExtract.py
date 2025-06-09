@@ -1018,15 +1018,42 @@ def main(input_sheet, output_root, seq=105):
         expected_ar = (w_in / h_in) if (h_in and w_in) else None
 
         # d) Crop logic (unchanged)…
-        print("   · Attempting crop-mark → bracket → union-of-all-ink…")
+        print("   · Attempting bracket crop…")
         gray_for_rect = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        enclosed_rect = detect_enclosed_box(gray_for_rect, min_area=5000)
-        if enclosed_rect:
-            ex0, ey0, ex1, ey1 = enclosed_rect
-            if ey0 > int(0.20 * h_img):
-                enclosed_rect = None
+        rect = detect_enclosed_box(gray_for_rect, min_area=5000)
+        if rect:
+            x0, y0, x1, y1 = rect
+            # if the top edge is below 20% of page, skip bracket crop
+            if y0 > int(0.20 * h_img):
+                rect = None
 
-        # … insert the rest of your cropping fallbacks here exactly as before …
+        if rect is not None:
+            print(f"   · [OK] Using bracket crop: {rect}")
+        else:
+            # try full-logo (crop above dimension line)
+            print("   · Bracket crop failed; trying full-logo crop…")
+            y_full = crop_full_logo(pdf_path, dpi=DPI)
+            if y_full:
+                x0, y0, x1, y1 = 0, 0, w_img, y_full
+                print(f"   · [OK] Using full-logo crop at y={y_full}")
+            else:
+                # union-of-ink fallback
+                print("   · Full-logo crop failed; trying union-of-ink…")
+                ink_rect = find_union_of_ink_contours(img, min_area=500, pad_pct=0.05,
+                                                      dbg_dir=dbg_dir, dbg_name=original_part)
+                if ink_rect:
+                    x0, y0, x1, y1 = ink_rect
+                    print(f"   · [OK] Using union-of-ink crop: {ink_rect}")
+                else:
+                    # final fallback: full‐page margin
+                    print("   · Union-of-ink also failed; falling back to full-page margin.")
+                    m = int(0.01 * min(h_img, w_img))
+                    x0, y0, x1, y1 = m, m, w_img - m, h_img - m
+                    print(f"   · [OK] Using margin crop: {(x0, y0, x1, y1)}")
+
+        # now actually crop and assign
+        crop_img = img[y0:y1, x0:x1]
+        print(f"   · Final crop size: {crop_img.shape[1]}×{crop_img.shape[0]}")
 
         # f) Save the final crop as JPEG
         jpg_name = f"{tms}.{original_part}.{seq}.jpg"
