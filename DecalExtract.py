@@ -765,7 +765,7 @@ def find_horizontal_aligned_union(img_color, min_area=2000, tol=250, pad_pct=0.0
 
     return (x0p, y0p, x1p, y1p)
 
-def download_pdf_via_api(part_number: str, pdf_dir: str, api_key: str) -> str:
+def download_pdf_via_api(part_number: str, pdf_dir: str, API_KEY: str) -> str:
     """
     1) POST {part_number} + x-api-key
     2) parse JSON or raw text for a signed CloudFront URL
@@ -775,7 +775,7 @@ def download_pdf_via_api(part_number: str, pdf_dir: str, api_key: str) -> str:
     body = {"part_number": part_number}
     headers = {
         "Content-Type": "application/json",
-        "x-api-key": api_key
+        "x-api-key": API_KEY
     }
 
     # a) call the API
@@ -1015,7 +1015,7 @@ def main(input_sheet, output_root, seq=105):
         print(f"[{i}] ➡️ Processing part={original_part}, TMS={tms}")
 
         # 1) Download PDF via API
-        pdf_path = download_pdf_via_api(original_part, tmp_dir, api_key)
+        pdf_path = download_pdf_via_api(original_part, tmp_dir, API_KEY)
         if not pdf_path:
             print(f"    · No document found for {original_part}; skipping.")
             records.append({
@@ -1216,4 +1216,3 @@ if __name__ == '__main__':
         title="Select output directory"
     )
     main(sheet, out_root, seq=105)
-
