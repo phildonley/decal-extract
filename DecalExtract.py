@@ -1068,16 +1068,51 @@ except Exception:
                     print(f"   · [OK] Using clustered-contours crop: {grp}")
                     crop_img = img[y0:y1, x0:x1]
                 else:
-                    # 8) Union of all ink
-                    print("   · Clustered-contours failed; trying union-of-all-ink…")
-                    ink = find_union_of_ink_contours(img, min_area=500, pad_pct=0.05, dbg_dir=dbg_dir, dbg_name=original_part)
-                    if ink:
-                        x0,y0,x1,y1 = ink
-                        print(f"   · [OK] Using union-of-all-ink crop: {ink}")
+                    # 8) Union of all ink (improved: union only the 3 largest blobs, clamp size)
+                    print("   · Clustered-contours failed; trying improved union-of-ink…")
+            
+                    # parameters for improved union‐of‐ink
+                    MIN_AREA   = 500        # drop tiny specks
+                    TOP_N      = 3          # union the 3 largest blobs
+                    PAD_PCT    = 0.05       # 5% pad
+                    CLAMP_FRAC = 0.6        # max 60% of page
+            
+                    # find every ink contour
+                    contours = find_union_of_ink_contours(img, min_area=MIN_AREA, pad_pct=0, dbg_dir=None, dbg_name=None)
+                    # note: we only want the raw list of contours, so call the helper directly:
+                    all_cnts, _ = cv2.findContours(
+                        cv2.threshold(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), 250, 255, cv2.THRESH_BINARY_INV)[1],
+                        cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                    )
+            
+                    # filter by area and pick top N
+                    big = [c for c in all_cnts if cv2.contourArea(c) >= MIN_AREA]
+                    top = sorted(big, key=cv2.contourArea, reverse=True)[:TOP_N]
+            
+                    if top:
+                        # union their bboxes
+                        boxes = [cv2.boundingRect(c) for c in top]
+                        x0 = min(b[0] for b in boxes)
+                        y0 = min(b[1] for b in boxes)
+                        x1 = max(b[0]+b[2] for b in boxes)
+                        y1 = max(b[1]+b[3] for b in boxes)
+            
+                        # pad
+                        pad = int(max(x1-x0, y1-y0) * PAD_PCT)
+                        x0, y0 = max(0, x0-pad), max(0, y0-pad)
+                        x1, y1 = min(w_img, x1+pad), min(h_img, y1+pad)
+            
+                        # clamp to centered box no larger than CLAMP_FRAC of page
+                        max_w, max_h = int(w_img*CLAMP_FRAC), int(h_img*CLAMP_FRAC)
+                        cx, cy = w_img//2, h_img//2
+                        x0 = max(x0, cx - max_w//2); x1 = min(x1, cx + max_w//2)
+                        y0 = max(y0, cy - max_h//2); y1 = min(y1, cy + max_h//2)
+            
+                        print(f"   · [OK] Using improved union-of-ink crop: {(x0,y0,x1,y1)}")
                         crop_img = img[y0:y1, x0:x1]
                     else:
                         # 9) Final margin
-                        print("   · All fallbacks failed; using full-page margin.")
+                        print("   · Improved union-of-ink failed; using full-page margin.")
                         m = int(0.01 * min(h_img, w_img))
                         crop_img = img[m:h_img-m, m:w_img-m]
 
