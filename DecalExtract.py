@@ -35,11 +35,6 @@ COLOR_MAP = {
     'blue':   (204, 102,   0),
     'black':  (  0,   0,   0),
 }
-# ── The Secret Sauce ──────────────────────────────────────────────────────────
-KEY_FILE = os.path.expanduser("~/.decal_api_key.json")
-API_ENDPOINT = "https://hal4ecrr1k.execute-api.us-east-1.amazonaws.com/prod/get_current_drawing"
-host = "hal4ecrr1k.execute-api.us-east-1.amazonaws.com"
-API_KEY = None
 
 # ── Utility Functions ─────────────────────────────────────────────────────────
 def get_valid_api_key() -> str:
