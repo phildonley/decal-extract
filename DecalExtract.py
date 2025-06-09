@@ -38,40 +38,6 @@ COLOR_MAP = {
 }
 
 # ── Utility Functions ─────────────────────────────────────────────────────────
-def get_valid_api_key() -> str:
-    """
-    Prompt the user once for X-API-KEY, store it in ~/.decal_api_key.json,
-    set the module-global API_KEY, and return it. On subsequent runs,
-    re-use the saved key.
-    """
-    global API_KEY
-
-    # 1) Try to load existing key
-    if os.path.exists(KEY_FILE):
-        try:
-            with open(KEY_FILE, "r") as f:
-                data = json.load(f)
-                key = data.get("x_api_key", "").strip()
-                if key:
-                    API_KEY = key
-                    return key
-        except Exception:
-            pass
-
-    # 2) Ask the user to paste in their API key
-    print("Please paste your X-API-KEY for the signed-URL service:")
-    key = getpass.getpass(prompt="X-API-KEY: ").strip()
-
-    # 3) Save it for next time
-    try:
-        with open(KEY_FILE, "w") as f:
-            json.dump({"x_api_key": key}, f)
-        os.chmod(KEY_FILE, 0o600)
-    except Exception as e:
-        print(f"Warning: could not save key to {KEY_FILE}: {e}")
-
-    API_KEY = key
-    return key
 
 def render_pdf_color_page(pdf_path, dpi=300):
     """Load the first page of PDF at `dpi` into a BGR numpy image."""
@@ -984,6 +950,13 @@ def main(input_sheet, output_root, seq=105):
         print("[ERROR] No API key provided; exiting.")
         sys.exit(1)
 
+    def main(input_sheet, output_root, seq=105):
+    # 1) grab the key exactly once from the helper
+    api_key = get_valid_api_key()    # this also sets DecalExtract_helper.API_KEY internally
+    if not api_key.strip():
+        print("[ERROR] No API key provided; exiting.")
+        sys.exit(1)
+
     # ─── Prepare output directories ────────────────────────────────────────────
     today     = datetime.datetime.now().strftime('%m%d%Y')
     base_name = f"decal_output_{today}"
@@ -1022,16 +995,15 @@ def main(input_sheet, output_root, seq=105):
         if not pdf_path:
             print(f"    · No document found for {original_part}; skipping.")
             records.append({
-                'ITEM_ID': original_part,
-                'NET_LENGTH': 0,
-                'NET_WIDTH': 0,
-                'NET_HEIGHT': THICKNESS_IN,
+                'ITEM_ID':       original_part,
+                'NET_LENGTH':    0,
+                'NET_WIDTH':     0,
+                'NET_HEIGHT':    THICKNESS_IN,
                 'IMAGE_FILE_NAME': '',
-                'UPDATED': 'N',
-                'TIME_STAMP': ts,
-                'SITE_ID': SITE_ID,
-                'FACTOR': FACTOR,
-                # etc.
+                'UPDATED':       'N',
+                'TIME_STAMP':    ts,
+                'SITE_ID':       SITE_ID,
+                'FACTOR':        FACTOR,
             })
             continue
 
