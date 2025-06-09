@@ -950,13 +950,6 @@ def main(input_sheet, output_root, seq=105):
         print("[ERROR] No API key provided; exiting.")
         sys.exit(1)
 
-    def main(input_sheet, output_root, seq=105):
-    # 1) grab the key exactly once from the helper
-    api_key = get_valid_api_key()    # this also sets DecalExtract_helper.API_KEY internally
-    if not api_key.strip():
-        print("[ERROR] No API key provided; exiting.")
-        sys.exit(1)
-
     # ─── Prepare output directories ────────────────────────────────────────────
     today     = datetime.datetime.now().strftime('%m%d%Y')
     base_name = f"decal_output_{today}"
@@ -1190,4 +1183,3 @@ if __name__ == '__main__':
         title="Select output directory"
     )
     main(sheet, out_root, seq=105)
-
