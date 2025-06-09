@@ -14,6 +14,7 @@ import fitz       # PyMuPDF
 import numpy as np
 import pandas as pd
 import pdfplumber
+import DecalExtract_helper as helper
 
 from tkinter import filedialog
 from DecalExtract_helper import get_valid_api_key, fetch_pdf_via_api
