@@ -17,7 +17,6 @@ import pdfplumber
 import DecalExtract_helper as helper
 
 from tkinter import filedialog
-from DecalExtract_helper import get_valid_api_key, fetch_pdf_via_api
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 SITE_ID         = 733
@@ -46,22 +45,26 @@ API_KEY = None
 def get_valid_api_key() -> str:
     """
     Prompt the user once for X-API-KEY, store it in ~/.decal_api_key.json,
-    and return it.  On subsequent runs, re-use the saved key.
+    set the module-global API_KEY, and return it. On subsequent runs,
+    re-use the saved key.
     """
+    global API_KEY
+
     # 1) Try to load existing key
     if os.path.exists(KEY_FILE):
         try:
             with open(KEY_FILE, "r") as f:
                 data = json.load(f)
-                key = data.get("x_api_key")
+                key = data.get("x_api_key", "").strip()
                 if key:
+                    API_KEY = key
                     return key
         except Exception:
             pass
 
     # 2) Ask the user to paste in their API key
     print("Please paste your X-API-KEY for the signed-URL service:")
-    key = getpass.getpass(prompt="X-API-KEY: ")
+    key = getpass.getpass(prompt="X-API-KEY: ").strip()
 
     # 3) Save it for next time
     try:
@@ -71,8 +74,9 @@ def get_valid_api_key() -> str:
     except Exception as e:
         print(f"Warning: could not save key to {KEY_FILE}: {e}")
 
+    API_KEY = key
     return key
-    
+
 def render_pdf_color_page(pdf_path, dpi=300):
     """Load the first page of PDF at `dpi` into a BGR numpy image."""
     doc = fitz.open(pdf_path)
