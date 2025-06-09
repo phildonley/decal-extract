@@ -977,14 +977,14 @@ def find_aligned_blob_group(img_color, min_area=10000, tol=10, pad=20):
     return (x0, y0, x1, y1)
 
 def main(input_sheet, output_root, seq=105):
-    global API_KEY
-    API_KEY = get_valid_api_key()
+    # 1) grab the key exactly once from the helper
+    API_KEY = helper.get_valid_api_key()
+    helper.API_KEY = API_KEY       # so fetch_pdf_via_api() sees it
+
+    # if you really want to bail out on empty:
     if not API_KEY.strip():
         print("[ERROR] No API key provided; exiting.")
         sys.exit(1)
-
-    import DecalExtract_helper as helper
-    helper.API_KEY = API_KEY
 
     # ─── Prepare output directories ────────────────────────────────────────────
     today     = datetime.datetime.now().strftime('%m%d%Y')
