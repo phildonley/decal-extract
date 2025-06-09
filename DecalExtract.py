@@ -1029,9 +1029,106 @@ def main(input_sheet, output_root, seq=105):
 
         if rect is not None:
             print(f"   · [OK] Using bracket crop: {rect}")
+            x0, y0, x1, y1 = rect
+            crop_img = img[y0:y1, x0:x1]
+
         else:
-            # try full-logo (crop above dimension line)
+            # full‐logo / template / blob‐group / etc… all under one try/except
             print("   · Full-logo failed; trying template-corner crop…")
+            try:
+                # ------------ TEMPLATE‐CORNER CROPPING ------------
+                x0, y0, x1, y1 = select_best_crop_box(img, template_sets, expected_ratio)
+                print(f"   · [OK] Using template-corner crop: {(x0,y0,x1,y1)}")
+                crop_img = img[y0:y1, x0:x1]
+
+            except Exception:
+                # ------------ LEGACY MULTI‐BAND ------------
+                H, W = img.shape[:2]
+                if W > H * 1.8:
+                    print("   · Legacy multi-band detected; slicing…")
+                    crop_img = legacy_multiband_crop(img)
+
+                else:
+                    # ------------ NEARBY‐BLOB GROUP ------------
+                    print("   · Template crop failed; trying nearby-blob grouping…")
+                    blob_rect = find_nearby_blob_group(img, min_area=1000, tol=50, pad=20)
+                    if blob_rect:
+                        x0,y0,x1,y1 = blob_rect
+                        print(f"   · [OK] Using nearby-blob crop: {blob_rect}")
+                        crop_img = img[y0:y1, x0:x1]
+
+                    else:
+                        # ------------ HORIZONTAL‐UNION ------------
+                        print("   · Nearby-blob failed; trying horizontal-aligned union…")
+                        hori = find_horizontal_aligned_union(img, min_area=2000, tol=250, pad_pct=0.05)
+                        if hori:
+                            x0,y0,x1,y1 = hori
+                            print(f"   · [OK] Using horizontal-union crop: {hori}")
+                            crop_img = img[y0:y1, x0:x1]
+
+                        else:
+                            # ------------ CLUSTERED‐CONTOUR UNION ------------
+                            print("   · Horizontal union failed; trying clustered-contour union…")
+                            grp = find_grouped_union_of_ink_contours(img, min_area=500, pad_pct=0.05)
+                            if grp:
+                                x0,y0,x1,y1 = grp
+                                print(f"   · [OK] Using clustered-contours crop: {grp}")
+                                crop_img = img[y0:y1, x0:x1]
+
+                            else:
+                                # ------------ IMPROVED UNION‐OF‐INK (REPLACE HERE) ------------
+                                print("   · Clustered-contours failed; trying improved union-of-ink…")
+
+                                import cv2
+                                # parameters
+                                MIN_AREA   = 500
+                                TOP_N      = 3
+                                PAD_PCT    = 0.05
+                                CLAMP_FRAC = 0.6
+
+                                # get all ink contours
+                                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                                _, inv = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
+                                cnts, _ = cv2.findContours(inv, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+                                # pick top‐N by area
+                                big = [c for c in cnts if cv2.contourArea(c) >= MIN_AREA]
+                                top = sorted(big, key=cv2.contourArea, reverse=True)[:TOP_N]
+
+                                if top:
+                                    # union their bboxes
+                                    boxes = [cv2.boundingRect(c) for c in top]
+                                    x0 = min(b[0] for b in boxes)
+                                    y0 = min(b[1] for b in boxes)
+                                    x1 = max(b[0]+b[2] for b in boxes)
+                                    y1 = max(b[1]+b[3] for b in boxes)
+
+                                    # pad
+                                    pad = int(max(x1-x0, y1-y0) * PAD_PCT)
+                                    x0, y0 = max(0, x0-pad), max(0, y0-pad)
+                                    x1, y1 = min(w_img, x1+pad), min(h_img, y1+pad)
+
+                                    # clamp to centered box no larger than CLAMP_FRAC of page
+                                    max_w, max_h = int(w_img*CLAMP_FRAC), int(h_img*CLAMP_FRAC)
+                                    cx, cy = w_img//2, h_img//2
+                                    x0 = max(x0, cx - max_w//2); x1 = min(x1, cx + max_w//2)
+                                    y0 = max(y0, cy - max_h//2); y1 = min(y1, cy + max_h//2)
+
+                                    print(f"   · [OK] Using improved union-of-ink crop: {(x0,y0,x1,y1)}")
+                                    crop_img = img[y0:y1, x0:x1]
+
+                                else:
+                                    # ------------ FINAL MARGIN ------------
+                                    print("   · Improved union-of-ink failed; using full-page margin.")
+                                    m = int(0.01 * min(h_img, w_img))
+                                    crop_img = img[m:h_img-m, m:w_img-m]
+
+        # now crop_img is set; continue on to save it…
+        print(f"   · Final crop size: {crop_img.shape[1]}×{crop_img.shape[0]}")
+        jpg_name = f"{tms}.{original_part}.{seq}.jpg"
+        out_jpg = os.path.join(imgs_dir, jpg_name)
+        cv2.imwrite(out_jpg, crop_img)
+        print(f"   · Writing JPEG → {out_jpg}")
 try:
     x0, y0, x1, y1 = select_best_crop_box(img, template_sets, expected_ratio)
     print(f"   · [OK] Using template-corner crop: {(x0,y0,x1,y1)}")
