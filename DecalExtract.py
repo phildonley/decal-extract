@@ -1008,6 +1008,10 @@ def main(input_sheet, output_root, seq=105):
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         _, blob = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
 
+        # c) Parse dimensions
+        h_in, w_in = parse_dimensions_from_pdf(pdf_path)
+        expected_ar = (w_in / h_in) if (h_in and w_in) else None
+
         # d) Crop logic (unified fallbacks)
         print("   · Attempting bracket crop…")
         gray_for_rect = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
