@@ -1026,10 +1026,10 @@ def main(input_sheet, output_root, seq=105):
             if y0 > int(0.20 * h_img):
                 rect = None
 
-        if rect is not None:
-            print(f"   · [OK] Using bracket crop: {rect}")
-            x0, y0, x1, y1 = rect
-            crop_img = img[y0:y1, x0:x1]
+            if rect is not None:
+                print(f"   · [OK] Using bracket crop: {rect}")
+                x0, y0, x1, y1 = rect
+                crop_img = img[y0:y1, x0:x1]
         else:
             print("   · Bracket crop failed; trying template-corner crop…")
             try:
