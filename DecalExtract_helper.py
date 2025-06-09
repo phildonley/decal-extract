@@ -12,13 +12,13 @@ def get_valid_api_key():
     if os.path.exists(KEY_FILE):
         try:
             with open(KEY_FILE, "r") as f:
-                return json.load(f)["api_key"]
+                return json.load(f)["x_api_key"]
         except Exception as e:
             print(f"[WARN] Failed to read API key file: {e}")
 
     api_key = getpass.getpass("Please paste your X-API-KEY for the signed-URL service: ")
     with open(KEY_FILE, "w") as f:
-        json.dump({"api_key": api_key.strip()}, f)
+        json.dump({"x_api_key": api_key.strip()}, f)  # <-- use "x_api_key"
     print("[OK] API key saved to disk.")
     return api_key.strip()
 
