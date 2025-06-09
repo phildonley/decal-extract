@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 import pdfplumber
 import DecalExtract_helper as helper
+from DecalExtract_helper import get_valid_api_key, fetch_pdf_via_api
 
 from tkinter import filedialog
 
@@ -978,11 +979,8 @@ def find_aligned_blob_group(img_color, min_area=10000, tol=10, pad=20):
 
 def main(input_sheet, output_root, seq=105):
     # 1) grab the key exactly once from the helper
-    API_KEY = helper.get_valid_api_key()
-    helper.API_KEY = API_KEY       # so fetch_pdf_via_api() sees it
-
-    # if you really want to bail out on empty:
-    if not API_KEY.strip():
+    api_key = get_valid_api_key()    # this also sets DecalExtract_helper.API_KEY internally
+    if not api_key.strip():
         print("[ERROR] No API key provided; exiting.")
         sys.exit(1)
 
@@ -1017,11 +1015,10 @@ def main(input_sheet, output_root, seq=105):
     for i, row in df.iterrows():
         original_part = row['PART'].strip()
         tms           = row['TMS']
-
         print(f"[{i}] ➡️ Processing part={original_part}, TMS={tms}")
 
         # 1) Download PDF via API
-        pdf_path = helper.fetch_pdf_via_api(original_part, tmp_dir)
+        pdf_path = fetch_pdf_via_api(original_part, tmp_dir)
         if not pdf_path:
             print(f"    · No document found for {original_part}; skipping.")
             records.append({
