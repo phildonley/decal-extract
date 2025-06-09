@@ -979,6 +979,7 @@ def find_aligned_blob_group(img_color, min_area=10000, tol=10, pad=20):
 def main(input_sheet, output_root, seq=105):
     global API_KEY
     API_KEY = get_valid_api_key()
+    helper.API_KEY = API_KEY
 
     # ─── Prepare output directories ────────────────────────────────────────────
     today     = datetime.datetime.now().strftime('%m%d%Y')
@@ -1015,12 +1016,11 @@ def main(input_sheet, output_root, seq=105):
         print(f"[{i}] ➡️ Processing part={original_part}, TMS={tms}")
 
         # 1) Download PDF via API
-        pdf_path = download_pdf_via_api(original_part, tmp_dir, API_KEY)
+        pdf_path = helper.fetch_pdf_via_api(original_part, tmp_dir)
         if not pdf_path:
             print(f"    · No document found for {original_part}; skipping.")
             records.append({
                 'ITEM_ID': original_part,
-                # ... fill in the rest of your “skip” record fields ...
                 'NET_LENGTH': 0,
                 'NET_WIDTH': 0,
                 'NET_HEIGHT': THICKNESS_IN,
