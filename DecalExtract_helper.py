@@ -47,14 +47,22 @@ def get_valid_api_key() -> str:
 
 def fetch_pdf_via_api(part_number: str, pdf_dir: str) -> str | None:
     global API_KEY
+
     if API_KEY is None:
         raise RuntimeError("API_KEY has not been initialized!")
 
-    # ensure output folder exists
-    os.makedirs(pdf_dir, exist_ok=True)
+    # helper to do the signed-URL POST
+    def _do_request():
+        os.makedirs(pdf_dir, exist_ok=True)
+        headers = {
+            "Content-Type": "application/json",
+            "x-api-key":    API_KEY,
+        }
+        body = {"part_number": part_number}
+        return requests.post(API_ENDPOINT, headers=headers, json=body, timeout=30)
 
-    # DNS debug (optional)
-    host = "hal4ecrr1k.execute-api.us-east-1.amazonaws.com"
+    # ── DNS debug ────────────────────────────────────────────────────────────────
+    host = API_ENDPOINT.split("/")[2]
     try:
         addr = socket.getaddrinfo(host, 443)
         print(f"[DEBUG] DNS lookup succeeded for {host} → {addr[0][4][0]}")
@@ -62,21 +70,26 @@ def fetch_pdf_via_api(part_number: str, pdf_dir: str) -> str | None:
         print(f"[ERROR] DNS resolution failed for {host}: {dns_err}")
         return None
 
-    headers = {
-        "Content-Type": "application/json",
-        "x-api-key":    API_KEY,
-    }
-    body = {"part_number": part_number}
+    # ── 1) POST to get signed URL ───────────────────────────────────────────────
+    resp = _do_request()
+    if resp.status_code == 403:
+        # invalid key → clear it and re-prompt once
+        print("[ERROR] API key seems invalid (403). Let's get a new one.")
+        try:
+            os.remove(KEY_FILE)
+        except OSError:
+            pass
+        API_KEY = None
+        API_KEY = get_valid_api_key()  # re-prompt and write fresh KEY_FILE
+        resp = _do_request()           # retry
 
-    # 1) call the API
     try:
-        resp = requests.post(API_ENDPOINT, headers=headers, json=body, timeout=30)
         resp.raise_for_status()
     except Exception as e:
         print(f"[ERROR] API call failed for '{part_number}': {e}")
         return None
 
-    # 2) extract signed URL (JSON or raw text)
+    # ── 2) extract signed URL (JSON or raw text) ────────────────────────────────
     url = None
     try:
         payload = resp.json()
@@ -90,7 +103,7 @@ def fetch_pdf_via_api(part_number: str, pdf_dir: str) -> str | None:
         print(f"[ERROR] No PDF URL in API response for '{part_number}'")
         return None
 
-    # 3) download the PDF
+    # ── 3) download the PDF ────────────────────────────────────────────────────
     pdf_name = f"{part_number}_{int(time.time())}.pdf"
     pdf_path = os.path.join(pdf_dir, pdf_name)
     r = requests.get(url, stream=True, timeout=30)
@@ -107,3 +120,4 @@ def fetch_pdf_via_api(part_number: str, pdf_dir: str) -> str | None:
 
     print(f"[OK] Downloaded PDF → {pdf_path}")
     return pdf_path
+
