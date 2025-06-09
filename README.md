@@ -240,7 +240,7 @@ libpng warning: iCCP: known incorrect sRGB profile
 [71] ➡️ Processing part=231561GT, TMS=16559400
    · [ERROR] API call failed for '231561GT': 403 Client Error: Forbidden for url: https://hal4ecrr1k.execute-api.us-east-1.amazonaws.com/prod/get_current_drawing
     · No document found for 231561GT; skipping.
-All done → C:/Users/Phillip.Donley/DECAL EXTRACT\decal_output_06082025\cubiscan\733_20250608_180900.csv
+All done → C:/Users/Phillip.Donley/DECAL EXTRACT\decal_output_06092025\cubiscan\733_20250609_110100.csv
     · Rendering page to image…
 Traceback (most recent call last):
   File "C:\Users\Phillip.Donley\DECAL EXTRACT\decalextract.py", line 1218, in <module>
