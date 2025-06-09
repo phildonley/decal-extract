@@ -3,6 +3,7 @@ import json
 import getpass
 import socket
 import requests
+import time
 
 KEY_FILE = os.path.expanduser("~/.decal_api_key.json")
 API_ENDPOINT = "https://hal4ecrr1k.execute-api.us-east-1.amazonaws.com/prod/get_current_drawing"
@@ -12,15 +13,19 @@ def get_valid_api_key() -> str:
     """
     Prompt the user once for X-API-KEY, store it in ~/.decal_api_key.json,
     and return it.  On subsequent runs, re-use the saved key.
+    This also sets the module-global API_KEY so fetch_pdf_via_api() can see it.
     """
+    global API_KEY
+
     # 1) Try to load existing key
     if os.path.exists(KEY_FILE):
         try:
             with open(KEY_FILE, "r") as f:
                 data = json.load(f)
-            key = data.get("x_api_key")
+            key = data.get("x_api_key", "").strip()
             if key:
-                return key.strip()
+                API_KEY = key
+                return API_KEY
         except Exception as e:
             print(f"[WARN] Failed to read API key file: {e}")
 
@@ -36,7 +41,9 @@ def get_valid_api_key() -> str:
     except Exception as e:
         print(f"[WARN] Could not save API key to {KEY_FILE}: {e}")
 
-    return api_key
+    # 4) Store into module-global and return
+    API_KEY = api_key
+    return API_KEY
 
 def fetch_pdf_via_api(part_number: str, pdf_dir: str) -> str | None:
     global API_KEY
