@@ -1181,10 +1181,10 @@ def main(input_sheet, output_root, seq=105):
     time.sleep(STEP_DELAY)
 
     # ── 8) Compute dims, volume, weight ────────────────────
-    h_in2, w_in2 = parse_dimensions_from_pdf(pdf_path)
-    vol2 = h_in2 * w_in2 * THICKNESS_IN
-    wgt2 = vol2 * MATERIAL_DENSITY
-    dim_wgt2 = vol2 / FACTOR
+    h_in, w_in = parse_dimensions_from_pdf(pdf_path)
+    vol = h_in * w_in * THICKNESS_IN
+    wgt = vol * MATERIAL_DENSITY
+    dim_wgt = vol / FACTOR
 
     # ── 9) Clean up ─────────────────────────────────────────
     os.remove(pdf_path)
@@ -1194,12 +1194,12 @@ def main(input_sheet, output_root, seq=105):
         'ITEM_ID':         part,
         'ITEM_TYPE':       '',
         'DESCRIPTION':     '',
-        'NET_LENGTH':      h_in2,
-        'NET_WIDTH':       w_in2,
+        'NET_LENGTH':      h_in,
+        'NET_WIDTH':       w_in,
         'NET_HEIGHT':      THICKNESS_IN,
-        'NET_WEIGHT':      wgt2,
-        'NET_VOLUME':      vol2,
-        'NET_DIM_WGT':     dim_wgt2,
+        'NET_WEIGHT':      wgt,
+        'NET_VOLUME':      vol,
+        'NET_DIM_WGT':     dim_wgt,
         'DIM_UNIT':        'in',
         'WGT_UNIT':        'lb',
         'VOL_UNIT':        'in',
