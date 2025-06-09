@@ -1031,25 +1031,55 @@ def main(input_sheet, output_root, seq=105):
             print(f"   · [OK] Using bracket crop: {rect}")
         else:
             # try full-logo (crop above dimension line)
-            print("   · Bracket crop failed; trying full-logo crop…")
-            y_full = crop_full_logo(pdf_path, dpi=DPI)
-            if y_full:
-                x0, y0, x1, y1 = 0, 0, w_img, y_full
-                print(f"   · [OK] Using full-logo crop at y={y_full}")
+            print("   · Full-logo failed; trying template-corner crop…")
+try:
+    x0, y0, x1, y1 = select_best_crop_box(img, template_sets, expected_ratio)
+    print(f"   · [OK] Using template-corner crop: {(x0,y0,x1,y1)}")
+    crop_img = img[y0:y1, x0:x1]
+except Exception:
+    # 4) Legacy multi-band
+    H, W = img.shape[:2]
+    if W > H * 1.8:
+        print("   · Legacy multi-band detected; slicing…")
+        # (reuse your existing band-slicing / recolor code here)
+        crop_img = legacy_multiband_crop(img)
+    else:
+        # 5) Nearby-blob grouping
+        print("   · Template crop failed; trying nearby-blob grouping…")
+        blob_rect = find_nearby_blob_group(img, min_area=1000, tol=50, pad=20)
+        if blob_rect:
+            x0,y0,x1,y1 = blob_rect
+            print(f"   · [OK] Using nearby-blob crop: {blob_rect}")
+            crop_img = img[y0:y1, x0:x1]
+        else:
+            # 6) Horizontal union
+            print("   · Nearby-blob failed; trying horizontal-aligned union…")
+            hori = find_horizontal_aligned_union(img, min_area=2000, tol=250, pad_pct=0.05)
+            if hori:
+                x0,y0,x1,y1 = hori
+                print(f"   · [OK] Using horizontal-union crop: {hori}")
+                crop_img = img[y0:y1, x0:x1]
             else:
-                # union-of-ink fallback
-                print("   · Full-logo crop failed; trying union-of-ink…")
-                ink_rect = find_union_of_ink_contours(img, min_area=500, pad_pct=0.05,
-                                                      dbg_dir=dbg_dir, dbg_name=original_part)
-                if ink_rect:
-                    x0, y0, x1, y1 = ink_rect
-                    print(f"   · [OK] Using union-of-ink crop: {ink_rect}")
+                # 7) Clustered contours
+                print("   · Horizontal union failed; trying clustered-contour union…")
+                grp = find_grouped_union_of_ink_contours(img, min_area=500, pad_pct=0.05)
+                if grp:
+                    x0,y0,x1,y1 = grp
+                    print(f"   · [OK] Using clustered-contours crop: {grp}")
+                    crop_img = img[y0:y1, x0:x1]
                 else:
-                    # final fallback: full‐page margin
-                    print("   · Union-of-ink also failed; falling back to full-page margin.")
-                    m = int(0.01 * min(h_img, w_img))
-                    x0, y0, x1, y1 = m, m, w_img - m, h_img - m
-                    print(f"   · [OK] Using margin crop: {(x0, y0, x1, y1)}")
+                    # 8) Union of all ink
+                    print("   · Clustered-contours failed; trying union-of-all-ink…")
+                    ink = find_union_of_ink_contours(img, min_area=500, pad_pct=0.05, dbg_dir=dbg_dir, dbg_name=original_part)
+                    if ink:
+                        x0,y0,x1,y1 = ink
+                        print(f"   · [OK] Using union-of-all-ink crop: {ink}")
+                        crop_img = img[y0:y1, x0:x1]
+                    else:
+                        # 9) Final margin
+                        print("   · All fallbacks failed; using full-page margin.")
+                        m = int(0.01 * min(h_img, w_img))
+                        crop_img = img[m:h_img-m, m:w_img-m]
 
         # now actually crop and assign
         crop_img = img[y0:y1, x0:x1]
