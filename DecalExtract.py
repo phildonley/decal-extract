@@ -1006,17 +1006,20 @@ def main(input_sheet, output_root, seq=105):
         img = render_pdf_color_page(pdf_path, dpi=DPI)
         h_img, w_img = img.shape[:2]
 
-        # b) Parse dimensions (inches or mm→inches)
+        # b) Parse dimensions
         h_in, w_in = parse_dimensions_from_pdf(pdf_path)
+        # if parse only returned a length (w_in=None), coerce to 0.0 so math still works
+        if w_in is None:
+            w_in = 0.0
         expected_ar = (w_in / h_in) if (h_in and w_in) else None
-        print(f"    · Parsed dims → h_in={h_in:.2f}, w_in={w_in:.2f}, expected_ar={expected_ar}")
-
-        # c) Build a full‐page ink mask for penalty calculations
-        gray_bw = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        _, mask_all = cv2.threshold(gray_bw, 250, 255, cv2.THRESH_BINARY_INV)
         
-        # d) Unified cropping fallbacks, scored by size‐&‐penalty
-        print("   · Attempting bracket‐box crop…")
+        # c) Guard logging so we never try to format None as a float
+        w_log  = f"{w_in:.2f}"       if w_in        is not None else "None"
+        ar_log = f"{expected_ar:.2f}" if expected_ar is not None else "None"
+        print(f"    · Parsed dims → h_in={h_in:.2f}, w_in={w_log}, expected_ar={ar_log}")
+
+        # d) Crop logic (unified fallbacks)
+        print("   · Attempting bracket crop…")
         gray_for_rect = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         rect = detect_enclosed_box(gray_for_rect, min_area=5000)
 
