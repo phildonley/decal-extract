@@ -988,15 +988,15 @@ def main(input_sheet, output_root, seq=105):
         if not pdf_path:
             print(f"    · No document found for {original_part}; skipping.")
             records.append({
-                'ITEM_ID':       original_part,
-                'NET_LENGTH':    0,
-                'NET_WIDTH':     0,
-                'NET_HEIGHT':    THICKNESS_IN,
-                'IMAGE_FILE_NAME': '',
-                'UPDATED':       'N',
-                'TIME_STAMP':    ts,
-                'SITE_ID':       SITE_ID,
-                'FACTOR':        FACTOR,
+                'ITEM_ID':        original_part,
+                'NET_LENGTH':     0,
+                'NET_WIDTH':      0,
+                'NET_HEIGHT':     THICKNESS_IN,
+                'IMAGE_FILE_NAME':'',
+                'UPDATED':        'N',
+                'TIME_STAMP':     ts,
+                'SITE_ID':        SITE_ID,
+                'FACTOR':         FACTOR,
             })
             continue
 
@@ -1005,120 +1005,125 @@ def main(input_sheet, output_root, seq=105):
         # a) Render first page to BGR image & build “ink” mask
         img = render_pdf_color_page(pdf_path, dpi=DPI)
         h_img, w_img = img.shape[:2]
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        _, blob = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
 
-        # c) Parse dimensions
+        # b) Parse dimensions (inches or mm→inches)
         h_in, w_in = parse_dimensions_from_pdf(pdf_path)
         expected_ar = (w_in / h_in) if (h_in and w_in) else None
+        print(f"    · Parsed dims → h_in={h_in:.2f}, w_in={w_in:.2f}, expected_ar={expected_ar}")
 
-        # d) Crop logic (unified fallbacks)
-        print("   · Attempting bracket crop…")
+        # c) Build a full‐page ink mask for penalty calculations
+        gray_bw = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        _, mask_all = cv2.threshold(gray_bw, 250, 255, cv2.THRESH_BINARY_INV)
+        
+        # d) Unified cropping fallbacks, scored by size‐&‐penalty
+        print("   · Attempting bracket‐box crop…")
         gray_for_rect = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         rect = detect_enclosed_box(gray_for_rect, min_area=5000)
-        if rect and (abs(((rect[2]-rect[0])/(rect[3]-rect[1])) - expected_ar)/expected_ar < 0.10):
-            # If the enclosed-box matches our expected aspect ratio, use it
-            print(f"   · [OK] Using enclosed-box crop: {rect}")
-            best_rect = rect
-        else:
-            # collect all fallback candidates
-            candidates = []
-            # 1) corner-template
+
+        candidates = []
+        # 1) bracket if it matches aspect-ratio
+        if rect and expected_ar:
+            w0, h0 = rect[2]-rect[0], rect[3]-rect[1]
+            ar0 = w0/float(h0) if h0 else 0
+            if abs(ar0 - expected_ar)/expected_ar < 0.10:
+                print(f"   · [OK] Using bracket crop: {rect}")
+                candidates = [rect]
+        # if no bracket, collect all other fallbacks:
+        if not candidates:
+            # 2) corner‐templates
             try:
-                r = select_best_crop_box(img, template_sets, expected_ar)
-                candidates.append(r)
+                tpl_rect = select_best_crop_box(img, template_sets, expected_ar)
+                candidates.append(tpl_rect)
             except:
                 pass
 
-            # 2) legacy multiband (if you still need this)
+            # 3) legacy multiband (if still needed)
             if img.shape[1] > img.shape[0] * 1.8:
                 try:
-                    for r in legacy_multiband_crop(img, return_all=True):
-                        candidates.append(r)
+                    for mb in legacy_multiband_crop(img, return_all=True):
+                        candidates.append(mb)
                 except:
                     pass
 
-            # 3) nearby-blob grouping
+            # 4) nearby‐blob grouping
             r = find_nearby_blob_group(img, min_area=1000, tol=50, pad=20)
             if r: candidates.append(r)
 
-            # 4) horizontal-union
+            # 5) horizontal‐union
             r = find_horizontal_aligned_union(img, min_area=2000, tol=250, pad_pct=0.05)
             if r: candidates.append(r)
 
-            # 5) clustered-contour union
+            # 6) clustered‐contour union
             r = find_grouped_union_of_ink_contours(img, min_area=500, pad_pct=0.05)
             if r: candidates.append(r)
 
-            # 6) union-of-all-ink fallback
+            # 7) union‐of‐all‐ink fallback
             r = find_union_of_ink_contours(img, min_area=500, pad_pct=0.05,
                                            dbg_dir=dbg_dir, dbg_name=original_part)
             if r: candidates.append(r)
 
-            # compute pixel targets
-            target_h = int(h_in * DPI)
-            target_w = int(w_in * DPI)
+        # e) Score all candidates and pick the best
+        target_w = int(w_in * DPI) if w_in else None
+        target_h = int(h_in * DPI) if h_in else None
 
-            # filter & score
-            best_score = float('inf')
-            best_rect  = None
-            gray_bw    = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            _, mask_all = cv2.threshold(gray_bw, 250, 255, cv2.THRESH_BINARY_INV)
+        best_score = float('inf')
+        best_rect  = None
 
-            for (x0,y0,x1,y1) in candidates:
-                w = x1 - x0
-                h = y1 - y0
-                if h == 0: 
-                    continue
-                ar = w / float(h)
-                # 10% aspect-ratio filter
+        for (x0,y0,x1,y1) in candidates:
+            w, h = x1-x0, y1-y0
+            if w<=0 or h<=0: 
+                continue
+
+            # AR check
+            if expected_ar:
+                ar = w/float(h)
                 if abs(ar - expected_ar)/expected_ar > 0.10:
                     continue
 
-                # size proximity
-                size_score = abs(w - target_w)/target_w + abs(h - target_h)/target_h
+            # size proximity
+            size_score = 0.0
+            if target_w and target_h:
+                size_score = abs(w-target_w)/target_w + abs(h-target_h)/target_h
 
-                # border-ink penalty
-                e = 5
-                top    = mask_all[y0:y0+e,   x0:x1]
-                bottom = mask_all[y1-e:y1,   x0:x1]
-                left   = mask_all[y0:y1,    x0:x0+e]
-                right  = mask_all[y0:y1,    x1-e:x1]
-                pen = float(top.sum() + bottom.sum() + left.sum() + right.sum())
-                norm_pen = pen / float((w * h) or 1)
-                
-                total_score = size_score + norm_pen * 0.5
+            # border‐ink penalty (5px border)
+            e = 5
+            top    = mask_all[y0:y0+e,   x0:x1]
+            bottom = mask_all[y1-e:y1,   x0:x1]
+            left   = mask_all[y0:y1,    x0:x0+e]
+            right  = mask_all[y0:y1,    x1-e:x1]
+            pen = float(top.sum() + bottom.sum() + left.sum() + right.sum())
+            norm_pen = pen / float((w*h) or 1)
 
-                if total_score < best_score:
-                    best_score = total_score
-                    best_rect  = (x0,y0,x1,y1)
+            total_score = size_score + norm_pen * 0.5
+            if total_score < best_score:
+                best_score = total_score
+                best_rect  = (x0,y0,x1,y1)
 
-            if best_rect is None:
-                # ultimate fallback → small page-margin
-                m = int(0.01 * min(h_img, w_img))
-                best_rect = (m, m, w_img-m, h_img-m)
-                print("   · No candidate passed filters → full-page margin crop.")
-            else:
-                print(f"   · Chosen best crop: {best_rect} (score={best_score:.2f})")
+        # f) If nothing passed, full‐page margin
+        if best_rect is None:
+            m = int(0.01 * min(h_img, w_img))
+            best_rect = (m, m, w_img-m, h_img-m)
+            print("   · No candidate passed filters → full-page margin crop.")
+        else:
+            print(f"   · Chosen best crop: {best_rect} (score={best_score:.2f})")
 
-        # perform final crop
+        # g) Perform final crop
         x0, y0, x1, y1 = best_rect
         crop_img = img[y0:y1, x0:x1]
 
-        # e) Save the cropped image
+        # ─── Save the cropped image ─────────────────────────────────────────────
         print(f"   · Final crop size: {crop_img.shape[1]}×{crop_img.shape[0]}")
         jpg_name = f"{tms}.{original_part}.{seq}.jpg"
         out_jpg  = os.path.join(imgs_dir, jpg_name)
         cv2.imwrite(out_jpg, crop_img)
         print(f"   · Writing JPEG → {out_jpg}")
 
-        # g) Clean up
+        # ─── Clean up & record ──────────────────────────────────────────────────
         os.remove(pdf_path)
         time.sleep(STEP_DELAY)
 
-        # 8) Record row
-        vol  = h_in * w_in * THICKNESS_IN
-        wgt  = vol * MATERIAL_DENSITY
+        vol = h_in * w_in * THICKNESS_IN
+        wgt = vol * MATERIAL_DENSITY
         records.append({
             'ITEM_ID':         original_part,
             'NET_LENGTH':      h_in,
@@ -1131,122 +1136,8 @@ def main(input_sheet, output_root, seq=105):
             'TIME_STAMP':      ts,
             'SITE_ID':         SITE_ID,
             'FACTOR':          FACTOR,
-            # etc.
         })
         print(f"[{i}] ✅ Done\n")
-
-    # ─── Tear down & write CSV ───────────────────────────────────────────────────
-    shutil.rmtree(tmp_dir, ignore_errors=True)
-    df_out = pd.DataFrame(records)
-    cols = [
-        'ITEM_ID','ITEM_TYPE','DESCRIPTION','NET_LENGTH','NET_WIDTH','NET_HEIGHT',
-        'NET_WEIGHT','NET_VOLUME','NET_DIM_WGT','DIM_UNIT','WGT_UNIT','VOL_UNIT',
-        'FACTOR','SITE_ID','TIME_STAMP','OPT_INFO_1','OPT_INFO_2','OPT_INFO_3',
-        'OPT_INFO_4','OPT_INFO_5','OPT_INFO_6','OPT_INFO_7','OPT_INFO_8',
-        'IMAGE_FILE_NAME','UPDATED'
-    ]
-    df_out = df_out.reindex(columns=cols)
-    out_csv = os.path.join(cub_dir, f"{SITE_ID}_{ts}.csv")
-    df_out.to_csv(out_csv, index=False)
-    print("All done →", out_csv)
-
-    # ── (Legacy block #6: not usually reached) ─────────────────────────────────────────
-    print("    · Rendering page to image…")
-    img_color = render_pdf_color_page(pdf_path, dpi=DPI)
-    h_img, w_img = img_color.shape[:2]
-
-    # 6a) Try 4-corner bracket crop with all template sets
-    try:
-        print("    · Selecting best crop box…")
-        x0, y0, x1, y1 = select_best_crop_box(img_color, template_sets)
-        print(f"    · Bracket crop box: {(x0, y0, x1, y1)}")
-        crop_region = img_color[y0:y1, x0:x1]
-    except Exception as e:
-        print(f"    · Template crop failed ({e}); falling back to blob/full-page…")
-        gray2 = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
-        _, thresh = cv2.threshold(gray2, 250, 255, cv2.THRESH_BINARY_INV)
-        cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if cnts:
-            bx, by, bw, bh = cv2.boundingRect(max(cnts, key=cv2.contourArea))
-            print(f"    · Blob crop box: {(bx, by, bx + bw, by + bh)}")
-            crop_region = img_color[by:by + bh, bx:bx + bw]
-        else:
-            m = int(0.01 * min(h_img, w_img))
-            print(f"    · Full-page margin crop: {(m, m, w_img - m, h_img - m)}")
-            crop_region = img_color[m:h_img - m, m:w_img - m]
-
-    # 6c) Extract that region
-    region = img_color[y0:y1, x0:x1]
-    rh, rw = crop_region.shape[:2]
-
-    # 6d) Legacy multi-layer? 3 bands side-by-side
-    if rw > rh * 1.8:
-        print("    · Detected legacy multi-layer → slicing bands…")
-        third = rw // 3
-        green = crop_region[:, third:2 * third]
-        black = crop_region[:, 2 * third:3 * third]
-
-        def recolor(band, bgr):
-            g = cv2.cvtColor(band, cv2.COLOR_BGR2GRAY)
-            _, mask = cv2.threshold(g, 250, 255, cv2.THRESH_BINARY_INV)
-            fill = np.zeros_like(band); fill[:] = bgr
-            return np.where(mask[:, :, None] > 0, fill, band)
-
-        band_g = recolor(green, COLOR_MAP['green'])
-        band_b = recolor(black, COLOR_MAP['black'])
-        stacked = band_b.copy()
-        mask_g = cv2.cvtColor(band_g, cv2.COLOR_BGR2GRAY) < 250
-        for c in range(3):
-            stacked[:, :, c] = np.where(mask_g, band_g[:, :, c], stacked[:, :, c])
-        crop = stacked
-    else:
-        crop = crop_region
-
-    # ── 7) Save JPEG ─────────────────────────────────────────
-    jpg_name = f"{tms}.{part}.{seq}.jpg"
-    out_jpg = os.path.join(imgs_dir, jpg_name)
-    print(f"    · Writing JPEG → {out_jpg}")
-    cv2.imwrite(out_jpg, crop)
-    time.sleep(STEP_DELAY)
-
-    # ── 8) Compute dims, volume, weight ────────────────────
-    h_in, w_in = parse_dimensions_from_pdf(pdf_path)
-    vol = h_in * w_in * THICKNESS_IN
-    wgt = vol * MATERIAL_DENSITY
-    dim_wgt = vol / FACTOR
-
-    # ── 9) Clean up ─────────────────────────────────────────
-    os.remove(pdf_path)
-
-    # ── 10) Record ──────────────────────────────────────────
-    records.append({
-        'ITEM_ID':         part,
-        'ITEM_TYPE':       '',
-        'DESCRIPTION':     '',
-        'NET_LENGTH':      h_in,
-        'NET_WIDTH':       w_in,
-        'NET_HEIGHT':      THICKNESS_IN,
-        'NET_WEIGHT':      wgt,
-        'NET_VOLUME':      vol,
-        'NET_DIM_WGT':     dim_wgt,
-        'DIM_UNIT':        'in',
-        'WGT_UNIT':        'lb',
-        'VOL_UNIT':        'in',
-        'FACTOR':          FACTOR,
-        'SITE_ID':         SITE_ID,
-        'TIME_STAMP':      ts,
-        'OPT_INFO_1':      '',
-        'OPT_INFO_2':      'Y',
-        'OPT_INFO_3':      'N',
-        'OPT_INFO_4':      '',
-        'OPT_INFO_5':      '',
-        'OPT_INFO_6':      '',
-        'OPT_INFO_7':      '',
-        'OPT_INFO_8':      0,
-        'IMAGE_FILE_NAME': '',
-        'UPDATED':         'Y'
-    })
-    print(f"[{i}] ✅ Done\n")
 
 if __name__ == '__main__':
     root = tk.Tk()
