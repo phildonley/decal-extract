@@ -1016,69 +1016,94 @@ def main(input_sheet, output_root, seq=105):
         print("   · Attempting bracket crop…")
         gray_for_rect = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         rect = detect_enclosed_box(gray_for_rect, min_area=5000)
-        if rect:
-            x0, y0, x1, y1 = rect
-            if y0 > int(0.20 * h_img):
-                rect = None
-
-        if rect is not None:
-            print(f"   · [OK] Using bracket crop: {rect}")
-            crop_img = img[y0:y1, x0:x1]
+        if rect and (abs(((rect[2]-rect[0])/(rect[3]-rect[1])) - expected_ar)/expected_ar < 0.10):
+            # If the enclosed-box matches our expected aspect ratio, use it
+            print(f"   · [OK] Using enclosed-box crop: {rect}")
+            best_rect = rect
         else:
-            print("   · Bracket crop failed; trying template-corner crop…")
+            # collect all fallback candidates
+            candidates = []
+            # 1) corner-template
             try:
-                x0, y0, x1, y1 = select_best_crop_box(img, template_sets, expected_ar)
-                print(f"   · [OK] Using template-corner crop: {(x0, y0, x1, y1)}")
-                crop_img = img[y0:y1, x0:x1]
+                r = select_best_crop_box(img, template_sets, expected_ar)
+                candidates.append(r)
             except:
-                H, W = img.shape[:2]
-                if W > H * 1.8:
-                    print("   · Legacy multi-band detected; slicing…")
-                    crop_img = legacy_multiband_crop(img)
-                else:
-                    print("   · Template-corner failed; trying nearby-blob grouping…")
-                    blob_rect = find_nearby_blob_group(img, min_area=1000, tol=50, pad=20)
-                    if blob_rect:
-                        print(f"   · [OK] Using nearby-blob crop: {blob_rect}")
-                        crop_img = img[blob_rect[1]:blob_rect[3], blob_rect[0]:blob_rect[2]]
-                    else:
-                        print("   · Nearby-blob failed; trying horizontal-aligned union…")
-                        hori = find_horizontal_aligned_union(img, min_area=2000, tol=250, pad_pct=0.05)
-                        if hori:
-                            print(f"   · [OK] Using horizontal-union crop: {hori}")
-                            crop_img = img[hori[1]:hori[3], hori[0]:hori[2]]
-                        else:
-                            print("   · Horizontal-union failed; trying clustered-contour union…")
-                            grp = find_grouped_union_of_ink_contours(img, min_area=500, pad_pct=0.05)
-                            if grp:
-                                print(f"   · [OK] Using clustered-contours crop: {grp}")
-                                crop_img = img[grp[1]:grp[3], grp[0]:grp[2]]
-                            else:
-                                print("   · Clustered-contours failed; trying improved union-of-ink…")
-                                gray2 = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                                _, inv = cv2.threshold(gray2, 250, 255, cv2.THRESH_BINARY_INV)
-                                cnts, _ = cv2.findContours(inv, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                                big = [c for c in cnts if cv2.contourArea(c) >= 500]
-                                top = sorted(big, key=cv2.contourArea, reverse=True)[:3]
-                                if top:
-                                    boxes = [cv2.boundingRect(c) for c in top]
-                                    x0 = min(b[0] for b in boxes)
-                                    y0 = min(b[1] for b in boxes)
-                                    x1 = max(b[0]+b[2] for b in boxes)
-                                    y1 = max(b[1]+b[3] for b in boxes)
-                                    pad = int(max(x1-x0, y1-y0) * 0.05)
-                                    x0, y0 = max(0, x0-pad), max(0, y0-pad)
-                                    x1, y1 = min(w_img, x1+pad), min(h_img, y1+pad)
-                                    max_w, max_h = int(w_img*0.6), int(h_img*0.6)
-                                    cx, cy = w_img//2, h_img//2
-                                    x0 = max(x0, cx-max_w//2); x1 = min(x1, cx+max_w//2)
-                                    y0 = max(y0, cy-max_h//2); y1 = min(y1, cy+max_h//2)
-                                    print(f"   · [OK] Using improved union-of-ink crop: {(x0, y0, x1, y1)}")
-                                    crop_img = img[y0:y1, x0:x1]
-                                else:
-                                    print("   · All fallbacks failed; using full-page margin.")
-                                    m = int(0.01 * min(h_img, w_img))
-                                    crop_img = img[m:h_img-m, m:w_img-m]
+                pass
+
+            # 2) legacy multiband (if you still need this)
+            if img.shape[1] > img.shape[0] * 1.8:
+                try:
+                    for r in legacy_multiband_crop(img, return_all=True):
+                        candidates.append(r)
+                except:
+                    pass
+
+            # 3) nearby-blob grouping
+            r = find_nearby_blob_group(img, min_area=1000, tol=50, pad=20)
+            if r: candidates.append(r)
+
+            # 4) horizontal-union
+            r = find_horizontal_aligned_union(img, min_area=2000, tol=250, pad_pct=0.05)
+            if r: candidates.append(r)
+
+            # 5) clustered-contour union
+            r = find_grouped_union_of_ink_contours(img, min_area=500, pad_pct=0.05)
+            if r: candidates.append(r)
+
+            # 6) union-of-all-ink fallback
+            r = find_union_of_ink_contours(img, min_area=500, pad_pct=0.05,
+                                           dbg_dir=dbg_dir, dbg_name=original_part)
+            if r: candidates.append(r)
+
+            # compute pixel targets
+            target_h = int(h_in * DPI)
+            target_w = int(w_in * DPI)
+
+            # filter & score
+            best_score = float('inf')
+            best_rect  = None
+            gray_bw    = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            _, mask_all = cv2.threshold(gray_bw, 250, 255, cv2.THRESH_BINARY_INV)
+
+            for (x0,y0,x1,y1) in candidates:
+                w = x1 - x0
+                h = y1 - y0
+                if h == 0: 
+                    continue
+                ar = w / float(h)
+                # 10% aspect-ratio filter
+                if abs(ar - expected_ar)/expected_ar > 0.10:
+                    continue
+
+                # size proximity
+                size_score = abs(w - target_w)/target_w + abs(h - target_h)/target_h
+
+                # border-ink penalty
+                e = 5
+                top    = mask_all[y0:y0+e,   x0:x1]
+                bottom = mask_all[y1-e:y1,   x0:x1]
+                left   = mask_all[y0:y1,    x0:x0+e]
+                right  = mask_all[y0:y1,    x1-e:x1]
+                pen = float(top.sum() + bottom.sum() + left.sum() + right.sum())
+                norm_pen = pen / float((w * h) or 1)
+                
+                total_score = size_score + norm_pen * 0.5
+
+                if total_score < best_score:
+                    best_score = total_score
+                    best_rect  = (x0,y0,x1,y1)
+
+            if best_rect is None:
+                # ultimate fallback → small page-margin
+                m = int(0.01 * min(h_img, w_img))
+                best_rect = (m, m, w_img-m, h_img-m)
+                print("   · No candidate passed filters → full-page margin crop.")
+            else:
+                print(f"   · Chosen best crop: {best_rect} (score={best_score:.2f})")
+
+        # perform final crop
+        x0, y0, x1, y1 = best_rect
+        crop_img = img[y0:y1, x0:x1]
 
         # e) Save the cropped image
         print(f"   · Final crop size: {crop_img.shape[1]}×{crop_img.shape[0]}")
